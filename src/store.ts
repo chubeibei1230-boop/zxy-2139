@@ -553,6 +553,7 @@ export function addChecklistItem(data: Partial<ChecklistItem> & Pick<ChecklistIt
 
 export function updateChecklistItem(id: string, patch: Partial<ChecklistItem>): AppState {
   return setState(s => {
+    if (isItemInClosedBatch(s, id)) return
     const item = s.checklist.find(x => x.id === id)
     if (item) {
       Object.assign(item, patch)
@@ -568,7 +569,7 @@ export function batchSetStatus(itemIds: string[], status: AuditStatus): AppState
   return setState(s => {
     const now = Date.now()
     s.checklist.forEach(item => {
-      if (itemIds.includes(item.id)) {
+      if (itemIds.includes(item.id) && !isItemInClosedBatch(s, item.id)) {
         item.status = status
         item.updatedAt = now
         item.verifiedBy = s.currentUser
@@ -581,6 +582,7 @@ export function batchSetStatus(itemIds: string[], status: AuditStatus): AppState
 
 export function deleteChecklistItem(id: string): AppState {
   return setState(s => {
+    if (isItemInClosedBatch(s, id)) return
     s.checklist = s.checklist.filter(x => x.id !== id)
     s.alerts = s.alerts.filter(a => a.itemId !== id)
     if (s.ui.selectedItemId === id) s.ui.selectedItemId = null
@@ -967,6 +969,7 @@ export function addRectificationTask(
   planCompleteAt: number | null
 ): AppState {
   return setState(s => {
+    if (isItemInClosedBatch(s, itemId)) return
     const now = Date.now()
     const task: RectificationTask = {
       id: uid('rect'),
@@ -1000,6 +1003,7 @@ export function updateRectificationStatus(
   return setState(s => {
     const task = s.rectifications.find(t => t.id === id)
     if (!task) return
+    if (isItemInClosedBatch(s, task.itemId)) return
     if (task.status === newStatus) return
 
     const validTransitions: Record<RectificationStatus, RectificationStatus[]> = {
@@ -1044,9 +1048,15 @@ export function getRectificationsForItem(itemId: string): RectificationTask[] {
   return s.rectifications.filter(t => t.itemId === itemId)
 }
 
-export function getFilteredRectifications(status: RectificationStatus | 'all'): RectificationTask[] {
+export function getFilteredRectifications(status: RectificationStatus | 'all' | 'overdue'): RectificationTask[] {
   const s = loadState()
   if (status === 'all') return s.rectifications
+  if (status === 'overdue') {
+    const now = Date.now()
+    return s.rectifications.filter(t => 
+      t.planCompleteAt && t.planCompleteAt < now && t.status !== 'completed' && t.status !== 'closed'
+    )
+  }
   return s.rectifications.filter(t => t.status === status)
 }
 
@@ -1054,7 +1064,7 @@ export function setRectificationPanelOpen(open: boolean): AppState {
   return setState(s => { s.ui.rectificationPanelOpen = open })
 }
 
-export function setRectificationFilterStatus(status: RectificationStatus | 'all'): AppState {
+export function setRectificationFilterStatus(status: RectificationStatus | 'all' | 'overdue'): AppState {
   return setState(s => { s.ui.rectificationFilterStatus = status })
 }
 
@@ -1459,6 +1469,55 @@ export function getBatchChecklist(batchId: string): ChecklistItem[] {
   return s.checklist.filter(i => idSet.has(i.id))
 }
 
+export function getFilteredBatchChecklist(batchId: string): ChecklistItem[] {
+  const s = loadState()
+  const batch = s.batches.find(b => b.id === batchId)
+  if (!batch) return []
+  const idSet = new Set(batch.checklistItemIds)
+  const batchItems = s.checklist.filter(i => idSet.has(i.id))
+  
+  const { filters } = s
+  return batchItems.filter(item => {
+    if (filters.areaIds.length > 0 && !filters.areaIds.includes(item.areaId)) return false
+    if (filters.themeIds.length > 0 && !filters.themeIds.includes(item.themeId)) return false
+    if (filters.responsible.length > 0) {
+      const wantNone = filters.responsible.includes('__none__')
+      if (wantNone) {
+        if (item.responsible && item.responsible.trim() !== '') return false
+      } else {
+        if (!item.responsible) return false
+        if (!filters.responsible.includes(item.responsible)) return false
+      }
+    }
+    if (filters.statuses.length > 0) {
+      const wantUnchecked = filters.statuses.includes('__unchecked__' as AuditStatus)
+      if (wantUnchecked) {
+        if (item.status !== null) return false
+      } else {
+        const wantActual = filters.statuses.filter(st => st !== '__unchecked__' as AuditStatus)
+        if (wantActual.length > 0) {
+          if (!item.status) return false
+          if (!wantActual.includes(item.status)) return false
+        }
+      }
+    }
+    if (filters.alertTypes.length > 0) {
+      const itemAlertTypes = new Set(s.alerts.filter(a => a.itemId === item.id).map(a => a.type))
+      const hasMatch = filters.alertTypes.some(t => itemAlertTypes.has(t))
+      if (!hasMatch) return false
+    }
+    if (filters.searchText) {
+      const q = filters.searchText.toLowerCase()
+      const inTitle = item.title.toLowerCase().includes(q)
+      const inLocation = item.displayLocation?.toLowerCase().includes(q) ?? false
+      const inRemark = item.rectificationRemark.toLowerCase().includes(q)
+      const inMissing = item.missingExplanation.toLowerCase().includes(q)
+      if (!inTitle && !inLocation && !inRemark && !inMissing) return false
+    }
+    return true
+  })
+}
+
 export function getBatchStats(batchId: string): BatchStats {
   const s = loadState()
   const batch = s.batches.find(b => b.id === batchId)
@@ -1603,6 +1662,12 @@ export function getBatchRectifications(batchId: string): RectificationTask[] {
   if (!batch) return []
   const idSet = new Set(batch.checklistItemIds)
   return s.rectifications.filter(r => idSet.has(r.itemId))
+}
+
+function isItemInClosedBatch(s: AppState, itemId: string): boolean {
+  return s.batches.some(b => 
+    b.status === 'closed' && b.checklistItemIds.includes(itemId)
+  )
 }
 
 export function goBackToBatches(): AppState {

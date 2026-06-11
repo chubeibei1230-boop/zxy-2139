@@ -173,7 +173,7 @@ export interface UiState {
   importModalOpen: boolean
   currentAdminTab: 'areas' | 'themes' | 'checkItems'
   rectificationPanelOpen: boolean
-  rectificationFilterStatus: RectificationStatus | 'all'
+  rectificationFilterStatus: RectificationStatus | 'all' | 'overdue'
   selectedRectificationId: string | null
   rectificationFormOpen: boolean
   rectificationFormItemId: string | null

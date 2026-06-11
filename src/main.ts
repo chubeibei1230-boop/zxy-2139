@@ -92,7 +92,7 @@ function render(): void {
   app.innerHTML = `
     <div class="app">
       ${renderToolbar(s, configReadOnly)}
-      ${s.ui.currentView === 'list' || s.ui.currentView === 'dashboard' ? renderFilterBar(s) : ''}
+      ${s.ui.currentView === 'list' || s.ui.currentView === 'dashboard' || s.ui.currentView === 'batchDetail' ? renderFilterBar(s) : ''}
       <div class="main-content">
         ${s.ui.currentView === 'dashboard' ? renderDashboard(s) :
           s.ui.currentView === 'batches' ? renderBatchList(s, readOnly, configReadOnly) :
@@ -388,8 +388,20 @@ function renderAlertPanel(s: AppState): string {
     return `<div class="alert-panel closed"></div>`
   }
 
-  // 问题1：告警面板按当前筛选后的列表范围重新计算
-  const visibleAlerts = store.getVisibleAlerts()
+  let visibleAlerts: AlertRecord[]
+  let totalAlerts: AlertRecord[]
+  let scopeLabel = ''
+
+  if (s.ui.currentView === 'batchDetail' && s.ui.selectedBatchId) {
+    visibleAlerts = store.getBatchAlerts(s.ui.selectedBatchId)
+    totalAlerts = visibleAlerts
+    scopeLabel = '批次内'
+  } else {
+    visibleAlerts = store.getVisibleAlerts()
+    totalAlerts = s.alerts
+    scopeLabel = '全局'
+  }
+
   const hasFilter = s.filters.areaIds.length + s.filters.themeIds.length +
     s.filters.responsible.length + s.filters.statuses.length +
     s.filters.alertTypes.length + (s.filters.searchText ? 1 : 0) > 0
@@ -404,10 +416,10 @@ function renderAlertPanel(s: AppState): string {
     <div class="alert-panel" id="alertPanel">
       <div class="alert-panel-header">
         <div class="alert-panel-title">
-          🔔 告警记录
+          🔔 ${scopeLabel}告警记录
           <span class="alert-count-badge">${visibleAlerts.length}</span>
-          ${hasFilter && visibleAlerts.length < s.alerts.length
-            ? `<span class="text-muted" style="font-size:11px;font-weight:400;margin-left:4px">(总 ${s.alerts.length}，已筛选)</span>`
+          ${s.ui.currentView !== 'batchDetail' && hasFilter && visibleAlerts.length < totalAlerts.length
+            ? `<span class="text-muted" style="font-size:11px;font-weight:400;margin-left:4px">(总 ${totalAlerts.length}，已筛选)</span>`
             : ''}
         </div>
         <button class="close-btn" id="closeAlertBtn" title="关闭">×</button>
@@ -416,8 +428,8 @@ function renderAlertPanel(s: AppState): string {
         ${visibleAlerts.length === 0 ? `
           <div class="empty-state">
             <div class="empty-state-icon">✅</div>
-            <div>当前筛选范围暂无告警</div>
-            ${hasFilter ? `<div style="margin-top:6px;font-size:12px">放宽筛选条件可查看更多</div>` : ''}
+            <div>当前${scopeLabel}暂无告警</div>
+            ${hasFilter && s.ui.currentView !== 'batchDetail' ? `<div style="margin-top:6px;font-size:12px">放宽筛选条件可查看更多</div>` : ''}
           </div>
         ` : (Object.keys(ALERT_LABELS) as AlertType[]).map(type => {
           const items = grouped.get(type) || []
@@ -659,26 +671,54 @@ function renderRectificationPanel(s: AppState): string {
   }
 
   const filterStatus = s.ui.rectificationFilterStatus
-  const filtered = store.getFilteredRectifications(filterStatus)
+  const isBatchView = s.ui.currentView === 'batchDetail' && s.ui.selectedBatchId
+  
+  let allRects: RectificationTask[]
+  let scopeLabel = ''
+  
+  if (isBatchView) {
+    allRects = store.getBatchRectifications(s.ui.selectedBatchId!)
+    scopeLabel = '批次内'
+  } else {
+    allRects = s.rectifications
+    scopeLabel = '全局'
+  }
+
+  let filtered: RectificationTask[]
+  if (filterStatus === 'all') {
+    filtered = allRects
+  } else if (filterStatus === 'overdue') {
+    const now = Date.now()
+    filtered = allRects.filter(t => 
+      t.planCompleteAt && t.planCompleteAt < now && t.status !== 'completed' && t.status !== 'closed'
+    )
+  } else {
+    filtered = allRects.filter(t => t.status === filterStatus)
+  }
+
   const areaMap = new Map(s.areas.map(a => [a.id, a.name]))
   const themeMap = new Map(s.themes.map(t => [t.id, t.name]))
   const canEditRect = canEdit(s.currentRole)
 
-  const totalCounts: Record<string, number> = { all: s.rectifications.length }
+  const totalCounts: Record<string, number> = { all: allRects.length }
   ;(['pending', 'in_progress', 'completed', 'closed'] as RectificationStatus[]).forEach(st => {
-    totalCounts[st] = s.rectifications.filter(t => t.status === st).length
+    totalCounts[st] = allRects.filter(t => t.status === st).length
   })
+  const now = Date.now()
+  totalCounts.overdue = allRects.filter(t => 
+    t.planCompleteAt && t.planCompleteAt < now && t.status !== 'completed' && t.status !== 'closed'
+  ).length
 
   const selectedTask = s.ui.selectedRectificationId
-    ? s.rectifications.find(t => t.id === s.ui.selectedRectificationId)
+    ? allRects.find(t => t.id === s.ui.selectedRectificationId)
     : null
 
   return `
     <div class="rect-panel" id="rectPanel">
       <div class="rect-panel-header">
         <div class="rect-panel-title">
-          🔄 整改闭环跟踪
-          <span class="alert-count-badge" style="background:#8b5cf6">${s.rectifications.length}</span>
+          🔄 ${scopeLabel}整改闭环跟踪
+          <span class="alert-count-badge" style="background:#8b5cf6">${allRects.length}</span>
         </div>
         <button class="close-btn" id="closeRectBtn" title="关闭">×</button>
       </div>
@@ -691,12 +731,17 @@ function renderRectificationPanel(s: AppState): string {
             ${RECTIFICATION_STATUS_LABELS[st]} ${totalCounts[st]}
           </span>
         `).join('')}
+        <span class="rect-filter-chip ${filterStatus === 'overdue' ? 'active' : ''}"
+          data-rect-filter="overdue"
+          style="${filterStatus === 'overdue' ? `background:#dc2626;border-color:#dc2626;color:white` : ''}">
+          ⏰ 已逾期 ${totalCounts.overdue}
+        </span>
       </div>
       <div class="rect-panel-body">
         ${filtered.length === 0 ? `
           <div class="empty-state">
             <div class="empty-state-icon">📋</div>
-            <div>暂无整改任务</div>
+            <div>当前${scopeLabel}暂无整改任务</div>
             <div style="margin-top:6px;font-size:12px">可在清单详情中发起整改</div>
           </div>
         ` : filtered.map(task => {
@@ -1211,7 +1256,7 @@ function bindEvents(): void {
   // 整改面板筛选
   document.querySelectorAll('[data-rect-filter]').forEach(el => {
     el.addEventListener('click', () => {
-      const filter = (el as HTMLElement).dataset.rectFilter as RectificationStatus | 'all'
+      const filter = (el as HTMLElement).dataset.rectFilter as RectificationStatus | 'all' | 'overdue'
       store.setRectificationFilterStatus(filter)
     })
   })
@@ -2393,12 +2438,20 @@ function renderBatchDetail(s: AppState, readOnly: boolean, configReadOnly: boole
     `
   }
 
+  const batchReadOnly = readOnly || batch.status === 'closed'
+
   const stats = store.getBatchStats(batchId)
-  const batchItems = store.getBatchChecklist(batchId)
+  const allBatchItems = store.getBatchChecklist(batchId)
+  const filteredBatchItems = store.getFilteredBatchChecklist(batchId)
+  const batchItems = filteredBatchItems
   const areaMap = new Map(s.areas.map(a => [a.id, a.name]))
   const themeMap = new Map(s.themes.map(t => [t.id, t.name]))
   const ciMap = new Map(s.checkItems.map(c => [c.id, c.name]))
   const batchAlerts = store.getBatchAlerts(batchId)
+
+  const hasActiveFilter = s.filters.areaIds.length > 0 || s.filters.themeIds.length > 0 || 
+    s.filters.responsible.length > 0 || s.filters.statuses.length > 0 || 
+    s.filters.alertTypes.length > 0 || (s.filters.searchText && s.filters.searchText.trim() !== '')
 
   const areaNames = batch.areaIds.map(id => areaMap.get(id)).filter(Boolean).join('、') || '全部区域'
   const themeNames = batch.themeIds.map(id => themeMap.get(id)).filter(Boolean).join('、') || '全部主题'
@@ -2433,6 +2486,13 @@ function renderBatchDetail(s: AppState, readOnly: boolean, configReadOnly: boole
           ` : ''}
         </div>
       </div>
+
+      ${batch.status === 'closed' ? `
+        <div class="batch-closed-notice" style="background:#fef3c7;padding:12px 16px;border-radius:8px;margin-bottom:16px;display:flex;align-items:center;gap:8px;color:#92400e">
+          <span style="font-size:20px">🔒</span>
+          <span>此批次已于 <strong>${batch.closedAt ? formatTime(batch.closedAt) : ''}</strong> 由 <strong>${esc(batch.closedBy || '')}</strong> 关闭，已锁定无法编辑。</span>
+        </div>
+      ` : ''}
 
       <div class="batch-detail-stats">
         <div class="dash-card" style="box-shadow:none;border:1px solid var(--border)">
@@ -2479,27 +2539,36 @@ function renderBatchDetail(s: AppState, readOnly: boolean, configReadOnly: boole
       </div>
 
       <div class="batch-detail-list-title">
-        <h3>📋 批次核对清单（${batchItems.length} 项）</h3>
+        <h3>📋 批次核对清单（${batchItems.length} 项${hasActiveFilter ? ` / 共 ${allBatchItems.length} 项` : ''}）</h3>
+        ${hasActiveFilter ? `<span class="text-muted" style="font-size:12px;margin-left:12px">已筛选</span>` : ''}
       </div>
 
       <div class="list-container" style="flex:1;min-height:0">
         <div class="list-toolbar">
           <div class="stats-info">
-            <span class="stats-badge total">共 ${stats.totalItems} 项</span>
-            <span class="stats-badge done">已校对 ${stats.checkedCount}</span>
-            <span class="stats-badge issue">问题 ${stats.issueCount}</span>
-            ${stats.activeRectifications > 0 ? `<span class="stats-badge" style="background:#ede9fe;color:#6d28d9">整改中 ${stats.activeRectifications}</span>` : ''}
+            <span class="stats-badge total">共 ${hasActiveFilter ? `${batchItems.length} / ${stats.totalItems}` : stats.totalItems} 项</span>
+            ${!hasActiveFilter ? `
+              <span class="stats-badge done">已校对 ${stats.checkedCount}</span>
+              <span class="stats-badge issue">问题 ${stats.issueCount}</span>
+              ${stats.activeRectifications > 0 ? `<span class="stats-badge" style="background:#ede9fe;color:#6d28d9">整改中 ${stats.activeRectifications}</span>` : ''}
+            ` : `
+              <span class="stats-badge done">已校对 ${batchItems.filter(i => i.status === 'normal' || i.status === 'need_supply' || i.status === 'need_review').length}</span>
+              <span class="stats-badge issue">问题 ${batchItems.filter(i => i.status === 'need_supply' || i.status === 'need_review').length}</span>
+            `}
           </div>
-          <div class="progress-wrap">
-            <div class="progress-bar"><div class="progress-fill" style="width:${stats.checkProgress}%"></div></div>
-            <div class="progress-text">校对进度 ${stats.checkProgress}%</div>
-          </div>
+          ${!hasActiveFilter ? `
+            <div class="progress-wrap">
+              <div class="progress-bar"><div class="progress-fill" style="width:${stats.checkProgress}%"></div></div>
+              <div class="progress-text">校对进度 ${stats.checkProgress}%</div>
+            </div>
+          ` : ''}
         </div>
         <div class="list-scroll" id="listScroll">
           ${batchItems.length === 0 ? `
             <div class="empty-state">
               <div class="empty-state-icon">📭</div>
-              <div>该批次下暂无核对清单</div>
+              <div>${hasActiveFilter ? '当前筛选条件下无匹配项' : '该批次下暂无核对清单'}</div>
+              ${hasActiveFilter ? `<div style="margin-top:6px;font-size:12px">请重置筛选条件查看更多</div>` : ''}
             </div>
           ` : `
             <table class="checklist-table">
@@ -2507,7 +2576,7 @@ function renderBatchDetail(s: AppState, readOnly: boolean, configReadOnly: boole
                 <th class="checkbox-col"></th>
                 <th style="min-width:240px">陈列标题</th>
                 ${visibleCols.map(col => `<th>${COLUMN_LABELS[col]}</th>`).join('')}
-                ${!readOnly ? `<th style="width:180px">快速操作</th>` : ''}
+                ${!batchReadOnly ? `<th style="width:180px">快速操作</th>` : ''}
               </tr></thead>
               <tbody>
                 ${batchItems.map(item => {
@@ -2541,7 +2610,7 @@ function renderBatchDetail(s: AppState, readOnly: boolean, configReadOnly: boole
                   }
                   visibleCols.forEach(k => { cells += col[k]() })
 
-                  const quickBtns = readOnly ? '' : `
+                  const quickBtns = batchReadOnly ? '' : `
                     <td>
                       <div class="quick-actions">
                         <button class="quick-btn" data-quick="normal" data-id="${item.id}" title="正常 (1)">✓</button>
@@ -2554,7 +2623,7 @@ function renderBatchDetail(s: AppState, readOnly: boolean, configReadOnly: boole
 
                   return `
                     <tr class="${isHighlighted ? 'highlighted' : ''} ${isSelected ? 'selected' : ''}" data-row-id="${item.id}">
-                      <td class="checkbox-col"><input type="checkbox" class="row-chk" data-id="${item.id}" ${isChecked ? 'checked' : ''}/></td>
+                      <td class="checkbox-col"><input type="checkbox" class="row-chk" data-id="${item.id}" ${isChecked ? 'checked' : ''} ${batchReadOnly ? 'disabled' : ''}/></td>
                       <td>
                         <div class="col-title">
                           <div>
