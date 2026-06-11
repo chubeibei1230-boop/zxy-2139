@@ -338,8 +338,14 @@ function renderAlertPanel(s: AppState): string {
     return `<div class="alert-panel closed"></div>`
   }
 
+  // 问题1：告警面板按当前筛选后的列表范围重新计算
+  const visibleAlerts = store.getVisibleAlerts()
+  const hasFilter = s.filters.areaIds.length + s.filters.themeIds.length +
+    s.filters.responsible.length + s.filters.statuses.length +
+    s.filters.alertTypes.length + (s.filters.searchText ? 1 : 0) > 0
+
   const grouped = new Map<AlertType, AlertRecord[]>()
-  s.alerts.forEach(a => {
+  visibleAlerts.forEach(a => {
     if (!grouped.has(a.type)) grouped.set(a.type, [])
     grouped.get(a.type)!.push(a)
   })
@@ -349,25 +355,31 @@ function renderAlertPanel(s: AppState): string {
       <div class="alert-panel-header">
         <div class="alert-panel-title">
           🔔 告警记录
-          <span class="alert-count-badge">${s.alerts.length}</span>
+          <span class="alert-count-badge">${visibleAlerts.length}</span>
+          ${hasFilter && visibleAlerts.length < s.alerts.length
+            ? `<span class="text-muted" style="font-size:11px;font-weight:400;margin-left:4px">(总 ${s.alerts.length}，已筛选)</span>`
+            : ''}
         </div>
         <button class="close-btn" id="closeAlertBtn" title="关闭">×</button>
       </div>
       <div class="alert-panel-body">
-        ${s.alerts.length === 0 ? `
+        ${visibleAlerts.length === 0 ? `
           <div class="empty-state">
             <div class="empty-state-icon">✅</div>
-            <div>暂无告警</div>
+            <div>当前筛选范围暂无告警</div>
+            ${hasFilter ? `<div style="margin-top:6px;font-size:12px">放宽筛选条件可查看更多</div>` : ''}
           </div>
         ` : (Object.keys(ALERT_LABELS) as AlertType[]).map(type => {
           const items = grouped.get(type) || []
           if (items.length === 0) return ''
+          const activeInFilter = s.filters.alertTypes.includes(type)
           return `
             <div class="alert-type-group">
-              <div class="alert-type-header" data-filter-alert="${type}">
+              <div class="alert-type-header ${activeInFilter ? 'active' : ''}" data-filter-alert="${type}"
+                style="${activeInFilter ? `background:${ALERT_COLORS[type]}22;color:${ALERT_COLORS[type]}` : ''}">
                 <span class="alert-type-dot" style="background:${ALERT_COLORS[type]}"></span>
                 <span>${ALERT_LABELS[type]}</span>
-                <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">${items.length}</span>
+                <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">${items.length}${activeInFilter ? ' ● 已筛选' : ''}</span>
               </div>
               <div class="alert-list">
                 ${items.slice(0, 8).map(a => `
@@ -844,16 +856,11 @@ function bindEvents(): void {
     })
   })
 
-  // 告警类型头部点击：自动筛选
+  // 告警类型头部点击：自动筛选 + 清理冲突筛选
   document.querySelectorAll('[data-filter-alert]').forEach(el => {
     el.addEventListener('click', () => {
       const alertType = (el as HTMLElement).dataset.filterAlert as AlertType
-      const cur = store.getState().filters.alertTypes
-      if (cur.includes(alertType)) {
-        store.setFilters({ alertTypes: cur.filter(t => t !== alertType) })
-      } else {
-        store.setFilters({ alertTypes: [...cur, alertType] })
-      }
+      store.applyAlertTypeFilter(alertType)
     })
   })
 
@@ -1381,12 +1388,17 @@ function handleKeydown(e: KeyboardEvent): void {
   const s = store.getState()
   const filtered = store.getFilteredChecklist()
 
-  // 按 N 跳到下一条告警
+  // 按 N 跳到下一条告警（使用当前可见范围）
   if (e.key === 'n' || e.key === 'N') {
     e.preventDefault()
-    if (s.alerts.length === 0) return
-    const unacked = s.alerts.filter(a => !a.acknowledged)
-    const pool = unacked.length > 0 ? unacked : s.alerts
+    const visibleAlerts = store.getVisibleAlerts()
+    if (visibleAlerts.length === 0) {
+      // 如果当前没有可见告警，自动清除告警筛选以便显示
+      store.setFilters({ alertTypes: [] })
+      return
+    }
+    const unacked = visibleAlerts.filter(a => !a.acknowledged)
+    const pool = unacked.length > 0 ? unacked : visibleAlerts
     if (pool.length === 0) return
     alertPointer = (alertPointer + 1) % pool.length
     const nextAlert = pool[alertPointer]

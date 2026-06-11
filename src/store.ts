@@ -495,6 +495,51 @@ export function locateAlert(alertId: string): AppState {
     if (!item) return
 
     let changed = false
+    const tryShow = () => {
+      const testState: AppState = JSON.parse(JSON.stringify(s))
+      const visible = testState.checklist.filter(i => {
+        const f = testState.filters
+        if (f.areaIds.length > 0 && !f.areaIds.includes(i.areaId)) return false
+        if (f.themeIds.length > 0 && !f.themeIds.includes(i.themeId)) return false
+        if (f.responsible.length > 0) {
+          const wantNone = f.responsible.includes('__none__')
+          if (wantNone) {
+            if (i.responsible && i.responsible.trim() !== '') return false
+          } else {
+            if (!i.responsible) return false
+            if (!f.responsible.includes(i.responsible)) return false
+          }
+        }
+        if (f.statuses.length > 0) {
+          const wantUnchecked = f.statuses.includes('__unchecked__' as AuditStatus)
+          if (wantUnchecked) {
+            if (i.status !== null) return false
+          } else {
+            const wantActual = f.statuses.filter(st => st !== '__unchecked__' as AuditStatus)
+            if (wantActual.length > 0) {
+              if (!i.status) return false
+              if (!wantActual.includes(i.status)) return false
+            }
+          }
+        }
+        if (f.alertTypes.length > 0) {
+          const itemAlertTypes = new Set(testState.alerts.filter(a => a.itemId === i.id).map(a => a.type))
+          const hasMatch = f.alertTypes.some(t => itemAlertTypes.has(t))
+          if (!hasMatch) return false
+        }
+        if (f.searchText) {
+          const q = f.searchText.toLowerCase()
+          if (!i.title.toLowerCase().includes(q) &&
+              !(i.displayLocation || '').toLowerCase().includes(q) &&
+              !i.rectificationRemark.toLowerCase().includes(q) &&
+              !i.missingExplanation.toLowerCase().includes(q)) return false
+        }
+        return true
+      })
+      return visible.some(v => v.id === item.id)
+    }
+
+    // 依次放宽各个冲突的筛选
     if (s.filters.areaIds.length > 0 && !s.filters.areaIds.includes(item.areaId)) {
       s.filters.areaIds = []
       changed = true
@@ -503,24 +548,47 @@ export function locateAlert(alertId: string): AppState {
       s.filters.themeIds = []
       changed = true
     }
-    if (s.filters.statuses.length > 0 && item.status && !s.filters.statuses.includes(item.status)) {
-      s.filters.statuses = []
-      changed = true
+    if (s.filters.statuses.length > 0) {
+      const wantUnchecked = s.filters.statuses.includes('__unchecked__' as AuditStatus)
+      let conflict = false
+      if (wantUnchecked && item.status !== null) conflict = true
+      if (!wantUnchecked && item.status && !s.filters.statuses.includes(item.status)) conflict = true
+      if (conflict) {
+        s.filters.statuses = []
+        changed = true
+      }
     }
-    if (item.responsible) {
-      if (s.filters.responsible.length > 0 && !s.filters.responsible.includes(item.responsible)) {
+    // 问题3: 责任人空缺类告警定位时，必须清掉责任人筛选
+    if (alert.type === 'no_responsible' || !item.responsible || item.responsible.trim() === '') {
+      if (s.filters.responsible.length > 0 && !s.filters.responsible.includes('__none__')) {
+        s.filters.responsible = ['__none__']
+        changed = true
+      }
+    } else if (s.filters.responsible.length > 0) {
+      if (s.filters.responsible.includes('__none__')) {
+        s.filters.responsible = []
+        changed = true
+      } else if (item.responsible && !s.filters.responsible.includes(item.responsible)) {
         s.filters.responsible = []
         changed = true
       }
     }
+    // 问题4: 告警定位不强制限制告警类型，只清理会导致目标被过滤掉的告警类型筛选
     if (s.filters.alertTypes.length > 0 && !s.filters.alertTypes.includes(alert.type)) {
-      s.filters.alertTypes = [...s.filters.alertTypes, alert.type]
-      changed = true
-    } else if (s.filters.alertTypes.length === 0) {
-      s.filters.alertTypes = [alert.type]
+      s.filters.alertTypes = []
       changed = true
     }
     if (s.filters.searchText !== '') {
+      s.filters.searchText = ''
+      changed = true
+    }
+    // 兜底：如果还不可见，清空全部筛选
+    if (!tryShow()) {
+      s.filters.areaIds = []
+      s.filters.themeIds = []
+      s.filters.statuses = []
+      s.filters.responsible = []
+      s.filters.alertTypes = []
       s.filters.searchText = ''
       changed = true
     }
@@ -529,6 +597,78 @@ export function locateAlert(alertId: string): AppState {
     s.ui.selectedItemId = item.id
     s.ui.sidebarOpen = true
   })
+}
+
+export function applyAlertTypeFilter(alertType: AlertType): AppState {
+  return setState(s => {
+    const hasType = s.filters.alertTypes.includes(alertType)
+    if (hasType) {
+      s.filters.alertTypes = s.filters.alertTypes.filter(t => t !== alertType)
+      return
+    }
+    // 追加前，先预判加上该告警类型后当前列表是否会有结果
+    s.filters.alertTypes = [...s.filters.alertTypes, alertType]
+    const visibleAfter = getFilteredChecklistInternal(s)
+    if (visibleAfter.length === 0) {
+      // 没有结果：清理冲突的区域/主题/状态/责任人/搜索词筛选
+      const tryRelax = (): ChecklistItem[] => {
+        return getFilteredChecklistInternal(s)
+      }
+      if (tryRelax().length === 0) { s.filters.searchText = '' }
+      if (tryRelax().length === 0) { s.filters.responsible = [] }
+      if (tryRelax().length === 0) { s.filters.statuses = [] }
+      if (tryRelax().length === 0) { s.filters.themeIds = [] }
+      if (tryRelax().length === 0) { s.filters.areaIds = [] }
+    }
+  })
+}
+
+function getFilteredChecklistInternal(s: AppState): ChecklistItem[] {
+  const { filters } = s
+  return s.checklist.filter(item => {
+    if (filters.areaIds.length > 0 && !filters.areaIds.includes(item.areaId)) return false
+    if (filters.themeIds.length > 0 && !filters.themeIds.includes(item.themeId)) return false
+    if (filters.responsible.length > 0) {
+      const wantNone = filters.responsible.includes('__none__')
+      if (wantNone) {
+        if (item.responsible && item.responsible.trim() !== '') return false
+      } else {
+        if (!item.responsible) return false
+        if (!filters.responsible.includes(item.responsible)) return false
+      }
+    }
+    if (filters.statuses.length > 0) {
+      const wantUnchecked = filters.statuses.includes('__unchecked__' as AuditStatus)
+      if (wantUnchecked) {
+        if (item.status !== null) return false
+      } else {
+        const wantActual = filters.statuses.filter(st => st !== '__unchecked__' as AuditStatus)
+        if (wantActual.length > 0) {
+          if (!item.status) return false
+          if (!wantActual.includes(item.status)) return false
+        }
+      }
+    }
+    if (filters.alertTypes.length > 0) {
+      const itemAlertTypes = new Set(s.alerts.filter(a => a.itemId === item.id).map(a => a.type))
+      const hasMatch = filters.alertTypes.some(t => itemAlertTypes.has(t))
+      if (!hasMatch) return false
+    }
+    if (filters.searchText) {
+      const q = filters.searchText.toLowerCase()
+      if (!item.title.toLowerCase().includes(q) &&
+          !(item.displayLocation || '').toLowerCase().includes(q) &&
+          !item.rectificationRemark.toLowerCase().includes(q) &&
+          !item.missingExplanation.toLowerCase().includes(q)) return false
+    }
+    return true
+  })
+}
+
+export function getVisibleAlerts(): AlertRecord[] {
+  const s = loadState()
+  const visibleItemIds = new Set(getFilteredChecklistInternal(s).map(i => i.id))
+  return s.alerts.filter(a => visibleItemIds.has(a.itemId))
 }
 
 function recomputeFilters(s: AppState): void {
