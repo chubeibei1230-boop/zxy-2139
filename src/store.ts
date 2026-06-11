@@ -11,9 +11,12 @@ import type {
   UserRole,
   RectificationTask,
   RectificationStatus,
-  RectificationHistoryEntry
+  RectificationHistoryEntry,
+  InspectionBatch,
+  BatchStatus,
+  BatchStats
 } from './types'
-import { DEFAULT_COLUMNS, DEFAULT_FILTERS } from './types'
+import { DEFAULT_COLUMNS, DEFAULT_FILTERS, BATCH_STATUS_LABELS, STATUS_LABELS, RECTIFICATION_STATUS_LABELS, ALERT_LABELS } from './types'
 
 const STORAGE_KEY = 'store_display_audit_state_v1'
 
@@ -111,6 +114,7 @@ function createInitialState(): AppState {
   const sample = generateSampleData()
   const alerts = computeAlertsFromChecklist(sample.checklist, sample.areas, sample.themes)
   const rectifications = generateSampleRectifications(sample.checklist)
+  const batches = generateSampleBatches(sample.checklist, sample.areas, sample.themes)
   return {
     currentRole: 'operator',
     currentUser: '张小明',
@@ -120,6 +124,7 @@ function createInitialState(): AppState {
     checklist: sample.checklist,
     alerts,
     rectifications,
+    batches,
     filters: { ...DEFAULT_FILTERS },
     columns: { ...DEFAULT_COLUMNS },
     ui: {
@@ -138,10 +143,72 @@ function createInitialState(): AppState {
       rectificationFormItemId: null,
       currentView: 'list',
       summaryModalOpen: false,
-      summaryText: ''
+      summaryText: '',
+      selectedBatchId: null,
+      batchCreateModalOpen: false,
+      batchSummaryModalOpen: false,
+      batchFilterStatus: 'all'
     },
     lastSavedAt: Date.now()
   }
+}
+
+function generateSampleBatches(
+  checklist: ChecklistItem[],
+  areas: StoreArea[],
+  themes: DisplayTheme[]
+): InspectionBatch[] {
+  const now = Date.now()
+  const yesterday = now - 86400000
+  const threeDaysAgo = now - 86400000 * 3
+
+  const batch1Items = checklist.filter(i => i.areaId === 'area_002' || i.areaId === 'area_001')
+  const batch2Items = checklist.filter(i => i.areaId === 'area_003' || i.areaId === 'area_005')
+  const batch3Items = checklist.filter(i => i.areaId === 'area_004')
+
+  return [
+    {
+      id: uid('batch'),
+      name: '端午节前陈列巡检',
+      date: new Date(now).toISOString().slice(0, 10),
+      areaIds: ['area_001', 'area_002'],
+      themeIds: ['theme_001', 'theme_002'],
+      responsible: '张小明',
+      creator: '管理员',
+      status: 'active',
+      createdAt: now - 3600000 * 2,
+      updatedAt: now - 1800000,
+      checklistItemIds: batch1Items.map(i => i.id)
+    },
+    {
+      id: uid('batch'),
+      name: '零食区陈列核对',
+      date: new Date(yesterday).toISOString().slice(0, 10),
+      areaIds: ['area_003', 'area_005'],
+      themeIds: ['theme_003', 'theme_004'],
+      responsible: '李芳',
+      creator: '管理员',
+      status: 'closed',
+      createdAt: yesterday - 3600000 * 4,
+      updatedAt: yesterday + 3600000 * 2,
+      closedAt: yesterday + 3600000 * 2,
+      closedBy: '管理员',
+      checklistItemIds: batch2Items.map(i => i.id)
+    },
+    {
+      id: uid('batch'),
+      name: '促销端头条目巡检',
+      date: new Date(threeDaysAgo).toISOString().slice(0, 10),
+      areaIds: ['area_004'],
+      themeIds: ['theme_003'],
+      responsible: '王强',
+      creator: '管理员',
+      status: 'active',
+      createdAt: threeDaysAgo,
+      updatedAt: threeDaysAgo + 3600000,
+      checklistItemIds: batch3Items.map(i => i.id)
+    }
+  ]
 }
 
 function computeAlertsFromChecklist(
@@ -294,6 +361,7 @@ export function loadState(): AppState {
       if (!state.filters) state.filters = { ...DEFAULT_FILTERS }
       if (!state.columns) state.columns = { ...DEFAULT_COLUMNS }
       if (!state.rectifications) state.rectifications = []
+      if (!state.batches) state.batches = []
       if (!state.ui) {
         state.ui = {
           sidebarOpen: false,
@@ -311,7 +379,11 @@ export function loadState(): AppState {
           rectificationFormItemId: null,
           currentView: 'list',
           summaryModalOpen: false,
-          summaryText: ''
+          summaryText: '',
+          selectedBatchId: null,
+          batchCreateModalOpen: false,
+          batchSummaryModalOpen: false,
+          batchFilterStatus: 'all'
         }
       }
       if (state.ui.rectificationPanelOpen === undefined) {
@@ -325,6 +397,12 @@ export function loadState(): AppState {
         state.ui.currentView = 'list'
         state.ui.summaryModalOpen = false
         state.ui.summaryText = ''
+      }
+      if (state.ui.selectedBatchId === undefined) {
+        state.ui.selectedBatchId = null
+        state.ui.batchCreateModalOpen = false
+        state.ui.batchSummaryModalOpen = false
+        state.ui.batchFilterStatus = 'all'
       }
       return state
     }
@@ -1012,10 +1090,6 @@ export function locateRectificationFromAlert(alertId: string): AppState {
   })
 }
 
-export function setCurrentView(view: 'list' | 'dashboard'): AppState {
-  return setState(s => { s.ui.currentView = view })
-}
-
 export function setSummaryModalOpen(open: boolean): AppState {
   return setState(s => { s.ui.summaryModalOpen = open })
 }
@@ -1273,5 +1347,267 @@ export function drillDownByRectificationStatus(status: RectificationStatus | 'ov
       s.ui.rectificationFilterStatus = status
     }
     s.ui.currentView = 'list'
+  })
+}
+
+// ============ 巡检批次管理 ============
+
+export function setCurrentView(view: 'list' | 'dashboard' | 'batches' | 'batchDetail'): AppState {
+  return setState(s => { s.ui.currentView = view })
+}
+
+export function selectBatch(id: string | null): AppState {
+  return setState(s => {
+    s.ui.selectedBatchId = id
+    if (id) {
+      s.ui.currentView = 'batchDetail'
+    }
+  })
+}
+
+export function setBatchCreateModalOpen(open: boolean): AppState {
+  return setState(s => { s.ui.batchCreateModalOpen = open })
+}
+
+export function setBatchSummaryModalOpen(open: boolean): AppState {
+  return setState(s => { s.ui.batchSummaryModalOpen = open })
+}
+
+export function setBatchFilterStatus(status: BatchStatus | 'all'): AppState {
+  return setState(s => { s.ui.batchFilterStatus = status })
+}
+
+export function getFilteredBatches(): InspectionBatch[] {
+  const s = loadState()
+  if (s.ui.batchFilterStatus === 'all') return s.batches
+  return s.batches.filter(b => b.status === s.ui.batchFilterStatus)
+}
+
+export function createBatch(
+  name: string,
+  date: string,
+  areaIds: string[],
+  themeIds: string[],
+  responsible: string
+): AppState {
+  return setState(s => {
+    const now = Date.now()
+    const matchingItems = s.checklist.filter(item => {
+      const areaMatch = areaIds.length === 0 || areaIds.includes(item.areaId)
+      const themeMatch = themeIds.length === 0 || themeIds.includes(item.themeId)
+      return areaMatch && themeMatch
+    })
+
+    const batch: InspectionBatch = {
+      id: uid('batch'),
+      name,
+      date,
+      areaIds,
+      themeIds,
+      responsible,
+      creator: s.currentUser,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+      checklistItemIds: matchingItems.map(i => i.id)
+    }
+    s.batches.push(batch)
+    s.ui.selectedBatchId = batch.id
+    s.ui.currentView = 'batchDetail'
+    s.ui.batchCreateModalOpen = false
+  })
+}
+
+export function closeBatch(id: string): AppState {
+  return setState(s => {
+    const batch = s.batches.find(b => b.id === id)
+    if (batch && batch.status === 'active') {
+      const now = Date.now()
+      batch.status = 'closed'
+      batch.closedAt = now
+      batch.closedBy = s.currentUser
+      batch.updatedAt = now
+    }
+  })
+}
+
+export function addItemToBatch(batchId: string, itemId: string): AppState {
+  return setState(s => {
+    const batch = s.batches.find(b => b.id === batchId)
+    if (batch && !batch.checklistItemIds.includes(itemId)) {
+      batch.checklistItemIds.push(itemId)
+      batch.updatedAt = Date.now()
+    }
+  })
+}
+
+export function removeItemFromBatch(batchId: string, itemId: string): AppState {
+  return setState(s => {
+    const batch = s.batches.find(b => b.id === batchId)
+    if (batch) {
+      batch.checklistItemIds = batch.checklistItemIds.filter(id => id !== itemId)
+      batch.updatedAt = Date.now()
+    }
+  })
+}
+
+export function getBatchChecklist(batchId: string): ChecklistItem[] {
+  const s = loadState()
+  const batch = s.batches.find(b => b.id === batchId)
+  if (!batch) return []
+  const idSet = new Set(batch.checklistItemIds)
+  return s.checklist.filter(i => idSet.has(i.id))
+}
+
+export function getBatchStats(batchId: string): BatchStats {
+  const s = loadState()
+  const batch = s.batches.find(b => b.id === batchId)
+  if (!batch) {
+    return {
+      totalItems: 0, checkedCount: 0, uncheckedCount: 0, normalCount: 0,
+      issueCount: 0, checkProgress: 0, totalAlerts: 0,
+      activeRectifications: 0, completedRectifications: 0, rectificationProgress: 0,
+      responsibleDistribution: []
+    }
+  }
+
+  const items = getBatchChecklist(batchId)
+  const itemIdSet = new Set(items.map(i => i.id))
+
+  const totalItems = items.length
+  const checkedCount = items.filter(i => i.status !== null).length
+  const uncheckedCount = totalItems - checkedCount
+  const normalCount = items.filter(i => i.status === 'normal').length
+  const issueCount = items.filter(i => i.status === 'need_supply' || i.status === 'need_review' || i.status === 'pending').length
+  const checkProgress = totalItems > 0 ? Math.round((checkedCount / totalItems) * 100) : 0
+
+  const totalAlerts = s.alerts.filter(a => itemIdSet.has(a.itemId)).length
+
+  const batchRectifications = s.rectifications.filter(r => itemIdSet.has(r.itemId))
+  const activeRectifications = batchRectifications.filter(r => r.status === 'pending' || r.status === 'in_progress').length
+  const completedRectifications = batchRectifications.filter(r => r.status === 'completed' || r.status === 'closed').length
+  const rectTotal = batchRectifications.length
+  const rectificationProgress = rectTotal > 0 ? Math.round((completedRectifications / rectTotal) * 100) : 0
+
+  const respMap = new Map<string, { count: number; issueCount: number }>()
+  items.forEach(item => {
+    const name = item.responsible || '未指定'
+    if (!respMap.has(name)) respMap.set(name, { count: 0, issueCount: 0 })
+    const entry = respMap.get(name)!
+    entry.count++
+    if (item.status === 'need_supply' || item.status === 'need_review' || item.status === 'pending') {
+      entry.issueCount++
+    }
+  })
+  const responsibleDistribution = Array.from(respMap.entries())
+    .map(([name, data]) => ({ name, ...data }))
+    .sort((a, b) => b.count - a.count)
+
+  return {
+    totalItems, checkedCount, uncheckedCount, normalCount, issueCount,
+    checkProgress, totalAlerts, activeRectifications, completedRectifications,
+    rectificationProgress, responsibleDistribution
+  }
+}
+
+export function generateBatchSummary(batchId: string): string {
+  const s = loadState()
+  const batch = s.batches.find(b => b.id === batchId)
+  if (!batch) return ''
+
+  const stats = getBatchStats(batchId)
+  const areaNames = batch.areaIds.map(id => s.areas.find(a => a.id === id)?.name).filter(Boolean).join('、')
+  const themeNames = batch.themeIds.map(id => s.themes.find(t => t.id === id)?.name).filter(Boolean).join('、')
+
+  const lines: string[] = []
+  lines.push(`【${batch.name} - 巡检复盘摘要】`)
+  lines.push(`巡检日期：${batch.date}`)
+  lines.push(`巡检区域：${areaNames || '全部'}`)
+  lines.push(`陈列主题：${themeNames || '全部'}`)
+  lines.push(`负责人：${batch.responsible}`)
+  lines.push(`创建人：${batch.creator}`)
+  lines.push('')
+
+  lines.push('一、校对完成概况')
+  lines.push(`  · 清单总数：${stats.totalItems} 项`)
+  lines.push(`  · 已校对：${stats.checkedCount} 项（完成率 ${stats.checkProgress}%）`)
+  lines.push(`  · 未校对：${stats.uncheckedCount} 项`)
+  lines.push(`  · 正常项：${stats.normalCount} 项`)
+  lines.push(`  · 异常项：${stats.issueCount} 项（含需补充、需复核、暂缓）`)
+  lines.push('')
+
+  lines.push('二、告警与整改')
+  lines.push(`  · 告警数量：${stats.totalAlerts} 条`)
+  const rectTotal = stats.activeRectifications + stats.completedRectifications
+  lines.push(`  · 整改任务：共 ${rectTotal} 项`)
+  lines.push(`  · 进行中：${stats.activeRectifications} 项`)
+  lines.push(`  · 已完成：${stats.completedRectifications} 项（整改进度 ${stats.rectificationProgress}%）`)
+  lines.push('')
+
+  lines.push('三、负责人分布')
+  if (stats.responsibleDistribution.length > 0) {
+    stats.responsibleDistribution.forEach(r => {
+      lines.push(`  · ${r.name}：${r.count} 项，其中问题 ${r.issueCount} 项`)
+    })
+  } else {
+    lines.push('  · 暂无责任人数据')
+  }
+  lines.push('')
+
+  lines.push('四、风险与建议')
+  const risks: string[] = []
+  if (stats.uncheckedCount > 0) risks.push(`尚有 ${stats.uncheckedCount} 项未完成校对，需尽快跟进`)
+  if (stats.issueCount > 0) risks.push(`存在 ${stats.issueCount} 项异常，需重点处理整改`)
+  if (stats.activeRectifications > 0) risks.push(`${stats.activeRectifications} 项整改任务进行中，需关注进度`)
+  if (stats.totalAlerts > stats.issueCount) risks.push(`告警数量较多 (${stats.totalAlerts})，建议逐项排查`)
+  if (stats.checkProgress < 80 && stats.totalItems > 0) risks.push(`校对完成率较低 (${stats.checkProgress}%)，建议加派人力`)
+
+  if (risks.length > 0) {
+    risks.forEach((r, idx) => lines.push(`  ${idx + 1}. ${r}`))
+  } else {
+    lines.push('  · 本次巡检执行良好，暂无明显风险')
+  }
+  lines.push('')
+
+  lines.push(`—— 生成时间：${new Date().toLocaleString('zh-CN')} ——`)
+
+  return lines.join('\n')
+}
+
+export function saveBatchSummary(batchId: string, summary: string): AppState {
+  return setState(s => {
+    const batch = s.batches.find(b => b.id === batchId)
+    if (batch) {
+      batch.summary = summary
+      batch.updatedAt = Date.now()
+    }
+  })
+}
+
+export function getBatch(batchId: string): InspectionBatch | undefined {
+  const s = loadState()
+  return s.batches.find(b => b.id === batchId)
+}
+
+export function getBatchAlerts(batchId: string): AlertRecord[] {
+  const s = loadState()
+  const batch = s.batches.find(b => b.id === batchId)
+  if (!batch) return []
+  const idSet = new Set(batch.checklistItemIds)
+  return s.alerts.filter(a => idSet.has(a.itemId))
+}
+
+export function getBatchRectifications(batchId: string): RectificationTask[] {
+  const s = loadState()
+  const batch = s.batches.find(b => b.id === batchId)
+  if (!batch) return []
+  const idSet = new Set(batch.checklistItemIds)
+  return s.rectifications.filter(r => idSet.has(r.itemId))
+}
+
+export function goBackToBatches(): AppState {
+  return setState(s => {
+    s.ui.selectedBatchId = null
+    s.ui.currentView = 'batches'
   })
 }

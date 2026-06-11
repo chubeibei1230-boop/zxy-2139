@@ -4,6 +4,25 @@ export type AuditStatus = 'normal' | 'need_supply' | 'need_review' | 'pending'
 
 export type RectificationStatus = 'pending' | 'in_progress' | 'completed' | 'closed'
 
+export type BatchStatus = 'active' | 'closed'
+
+export interface InspectionBatch {
+  id: string
+  name: string
+  date: string
+  areaIds: string[]
+  themeIds: string[]
+  responsible: string
+  creator: string
+  status: BatchStatus
+  createdAt: number
+  updatedAt: number
+  closedAt?: number
+  closedBy?: string
+  summary?: string
+  checklistItemIds: string[]
+}
+
 export interface RectificationTask {
   id: string
   itemId: string
@@ -111,7 +130,21 @@ export interface ColumnConfig {
   alerts: boolean
 }
 
-export type DashboardView = 'list' | 'dashboard'
+export type DashboardView = 'list' | 'dashboard' | 'batches' | 'batchDetail'
+
+export interface BatchStats {
+  totalItems: number
+  checkedCount: number
+  uncheckedCount: number
+  normalCount: number
+  issueCount: number
+  checkProgress: number
+  totalAlerts: number
+  activeRectifications: number
+  completedRectifications: number
+  rectificationProgress: number
+  responsibleDistribution: Array<{ name: string; count: number; issueCount: number }>
+}
 
 export interface DashboardStats {
   totalItems: number
@@ -147,6 +180,10 @@ export interface UiState {
   currentView: DashboardView
   summaryModalOpen: boolean
   summaryText: string
+  selectedBatchId: string | null
+  batchCreateModalOpen: boolean
+  batchSummaryModalOpen: boolean
+  batchFilterStatus: BatchStatus | 'all'
 }
 
 export interface AppState {
@@ -158,6 +195,7 @@ export interface AppState {
   checklist: ChecklistItem[]
   alerts: AlertRecord[]
   rectifications: RectificationTask[]
+  batches: InspectionBatch[]
   filters: FilterState
   columns: ColumnConfig
   ui: UiState
@@ -235,4 +273,14 @@ export const DEFAULT_FILTERS: FilterState = {
   statuses: [],
   alertTypes: [],
   searchText: ''
+}
+
+export const BATCH_STATUS_LABELS: Record<BatchStatus, string> = {
+  active: '进行中',
+  closed: '已关闭'
+}
+
+export const BATCH_STATUS_COLORS: Record<BatchStatus, string> = {
+  active: '#3b82f6',
+  closed: '#6b7280'
 }

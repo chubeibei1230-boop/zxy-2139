@@ -11,7 +11,9 @@ import type {
   CheckItem,
   ColumnConfig,
   RectificationTask,
-  RectificationStatus
+  RectificationStatus,
+  InspectionBatch,
+  BatchStatus
 } from './types'
 import {
   STATUS_LABELS,
@@ -21,7 +23,9 @@ import {
   ROLE_LABELS,
   DEFAULT_COLUMNS,
   RECTIFICATION_STATUS_LABELS,
-  RECTIFICATION_STATUS_COLORS
+  RECTIFICATION_STATUS_COLORS,
+  BATCH_STATUS_LABELS,
+  BATCH_STATUS_COLORS
 } from './types'
 import * as store from './store'
 
@@ -88,10 +92,13 @@ function render(): void {
   app.innerHTML = `
     <div class="app">
       ${renderToolbar(s, configReadOnly)}
-      ${renderFilterBar(s)}
+      ${s.ui.currentView === 'list' || s.ui.currentView === 'dashboard' ? renderFilterBar(s) : ''}
       <div class="main-content">
-        ${s.ui.currentView === 'dashboard' ? renderDashboard(s) : renderListArea(s, readOnly)}
-        ${renderAlertPanel(s)}
+        ${s.ui.currentView === 'dashboard' ? renderDashboard(s) :
+          s.ui.currentView === 'batches' ? renderBatchList(s, readOnly, configReadOnly) :
+          s.ui.currentView === 'batchDetail' ? renderBatchDetail(s, readOnly, configReadOnly) :
+          renderListArea(s, readOnly)}
+        ${(s.ui.currentView === 'list' || s.ui.currentView === 'batchDetail') ? renderAlertPanel(s) : ''}
       </div>
       ${renderDetailSidebar(s, readOnly)}
       ${renderRectificationPanel(s)}
@@ -100,6 +107,8 @@ function render(): void {
       ${renderImportModal(s, readOnly)}
       ${renderColumnPopover(s)}
       ${renderSummaryModal(s)}
+      ${renderBatchCreateModal(s)}
+      ${renderBatchSummaryModal(s)}
     </div>
   `
 
@@ -138,6 +147,7 @@ function renderToolbar(s: AppState, configReadOnly: boolean): string {
         <div class="view-switcher">
           <button class="view-switch-btn ${s.ui.currentView === 'list' ? 'active' : ''}" data-view="list">📋 清单</button>
           <button class="view-switch-btn ${s.ui.currentView === 'dashboard' ? 'active' : ''}" data-view="dashboard">📊 看板</button>
+          <button class="view-switch-btn ${s.ui.currentView === 'batches' || s.ui.currentView === 'batchDetail' ? 'active' : ''}" data-view="batches">🗂️ 巡检批次</button>
         </div>
         ${s.ui.currentView === 'dashboard' ? `
           <button class="btn btn-primary btn-sm" id="generateSummaryBtn" title="一键生成复盘摘要">
@@ -2211,6 +2221,592 @@ function bindDashboardEvents(): void {
       store.drillDownByRectificationStatus(status)
     })
   })
+
+  bindBatchEvents()
+}
+
+// ============ 巡检批次管理 UI ============
+
+function renderBatchList(s: AppState, readOnly: boolean, configReadOnly: boolean): string {
+  const batches = store.getFilteredBatches()
+  const areaMap = new Map(s.areas.map(a => [a.id, a.name]))
+  const themeMap = new Map(s.themes.map(t => [t.id, t.name]))
+
+  return `
+    <div class="batch-list-container">
+      <div class="batch-list-header">
+        <div>
+          <h2 class="batch-title">🗂️ 巡检批次管理</h2>
+          <p class="batch-subtitle">按日期和范围创建巡检批次，跟踪核对进度和整改情况</p>
+        </div>
+        <div class="batch-header-actions">
+          <div class="batch-filter-chips">
+            <span class="batch-filter-chip ${s.ui.batchFilterStatus === 'all' ? 'active' : ''}" data-batch-filter="all">全部 ${s.batches.length}</span>
+            <span class="batch-filter-chip ${s.ui.batchFilterStatus === 'active' ? 'active' : ''}" 
+              data-batch-filter="active"
+              style="${s.ui.batchFilterStatus === 'active' ? `background:${BATCH_STATUS_COLORS.active};border-color:${BATCH_STATUS_COLORS.active};color:white` : ''}">
+              进行中 ${s.batches.filter(b => b.status === 'active').length}
+            </span>
+            <span class="batch-filter-chip ${s.ui.batchFilterStatus === 'closed' ? 'active' : ''}"
+              data-batch-filter="closed"
+              style="${s.ui.batchFilterStatus === 'closed' ? `background:${BATCH_STATUS_COLORS.closed};border-color:${BATCH_STATUS_COLORS.closed};color:white` : ''}">
+              已关闭 ${s.batches.filter(b => b.status === 'closed').length}
+            </span>
+          </div>
+          ${!configReadOnly ? `
+            <button class="btn btn-primary" id="createBatchBtn">➕ 创建巡检批次</button>
+          ` : ''}
+        </div>
+      </div>
+
+      <div class="batch-list-body">
+        ${batches.length === 0 ? `
+          <div class="empty-state" style="padding:60px 20px">
+            <div class="empty-state-icon">🗂️</div>
+            <div>暂无巡检批次</div>
+            <div style="margin-top:6px;font-size:12px">${configReadOnly ? '请联系管理员创建批次' : '点击右上角创建新的巡检批次'}</div>
+          </div>
+        ` : `
+          <div class="batch-grid">
+            ${batches.map(batch => renderBatchCard(s, batch, areaMap, themeMap, readOnly, configReadOnly)).join('')}
+          </div>
+        `}
+      </div>
+    </div>
+  `
+}
+
+function renderBatchCard(
+  s: AppState,
+  batch: InspectionBatch,
+  areaMap: Map<string, string>,
+  themeMap: Map<string, string>,
+  readOnly: boolean,
+  configReadOnly: boolean
+): string {
+  const stats = store.getBatchStats(batch.id)
+  const areaNames = batch.areaIds.map(id => areaMap.get(id)).filter(Boolean).join('、') || '全部区域'
+  const themeNames = batch.themeIds.map(id => themeMap.get(id)).filter(Boolean).join('、') || '全部主题'
+  const topResponsibles = stats.responsibleDistribution.slice(0, 3)
+
+  return `
+    <div class="batch-card" data-batch-id="${batch.id}">
+      <div class="batch-card-header">
+        <div class="batch-card-title-wrap">
+          <div class="batch-card-title">${esc(batch.name)}</div>
+          <span class="batch-status-tag" style="background:${BATCH_STATUS_COLORS[batch.status]}">
+            ${BATCH_STATUS_LABELS[batch.status]}
+          </span>
+        </div>
+        <div class="batch-card-date">📅 ${esc(batch.date)}</div>
+      </div>
+
+      <div class="batch-card-meta">
+        <div class="batch-meta-item">📍 ${esc(areaNames)}</div>
+        <div class="batch-meta-item">🎯 ${esc(themeNames)}</div>
+        <div class="batch-meta-item">👤 ${esc(batch.responsible)}</div>
+      </div>
+
+      <div class="batch-card-stats">
+        <div class="batch-stat-item">
+          <div class="batch-stat-num" style="color:var(--primary)">${stats.totalItems}</div>
+          <div class="batch-stat-label">清单总数</div>
+        </div>
+        <div class="batch-stat-item">
+          <div class="batch-stat-num" style="color:var(--success)">${stats.checkProgress}%</div>
+          <div class="batch-stat-label">完成率</div>
+        </div>
+        <div class="batch-stat-item">
+          <div class="batch-stat-num" style="color:var(--danger)">${stats.issueCount}</div>
+          <div class="batch-stat-label">异常数</div>
+        </div>
+        <div class="batch-stat-item">
+          <div class="batch-stat-num" style="color:#8b5cf6">${stats.activeRectifications}</div>
+          <div class="batch-stat-label">整改中</div>
+        </div>
+      </div>
+
+      <div class="batch-card-progress">
+        <div class="batch-progress-label">
+          <span>校对进度</span>
+          <span>${stats.checkedCount}/${stats.totalItems}</span>
+        </div>
+        <div class="batch-progress-bar">
+          <div class="batch-progress-fill" style="width:${stats.checkProgress}%"></div>
+        </div>
+      </div>
+
+      ${topResponsibles.length > 0 ? `
+        <div class="batch-card-responsibles">
+          <span class="batch-resp-label">负责人分布：</span>
+          ${topResponsibles.map(r => `
+            <span class="batch-resp-chip" data-batch-resp="${esc(r.name)}" data-batch-id="${batch.id}">
+              ${esc(r.name)} ${r.issueCount > 0 ? `<span class="batch-resp-issue">${r.issueCount}</span>` : ''}
+            </span>
+          `).join('')}
+          ${stats.responsibleDistribution.length > 3 ? `
+            <span class="batch-resp-chip batch-resp-more">+${stats.responsibleDistribution.length - 3}</span>
+          ` : ''}
+        </div>
+      ` : ''}
+
+      <div class="batch-card-footer">
+        <div class="batch-card-time">
+          <span>最近更新：${formatTime(batch.updatedAt)}</span>
+          <span>· 创建人：${esc(batch.creator)}</span>
+        </div>
+        <div class="batch-card-actions">
+          ${!configReadOnly && batch.status === 'active' ? `
+            <button class="btn btn-sm btn-danger" data-close-batch="${batch.id}">关闭批次</button>
+          ` : ''}
+          <button class="btn btn-sm btn-primary" data-view-batch="${batch.id}">查看详情 →</button>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function renderBatchDetail(s: AppState, readOnly: boolean, configReadOnly: boolean): string {
+  const batchId = s.ui.selectedBatchId
+  if (!batchId) {
+    return `
+      <div class="batch-list-container">
+        <div class="empty-state" style="padding:60px 20px">
+          <div class="empty-state-icon">🗂️</div>
+          <div>批次不存在或已删除</div>
+          <button class="btn btn-primary" style="margin-top:16px" id="backToBatchList">← 返回批次列表</button>
+        </div>
+      </div>
+    `
+  }
+
+  const batch = store.getBatch(batchId)
+  if (!batch) {
+    return `
+      <div class="batch-list-container">
+        <div class="empty-state" style="padding:60px 20px">
+          <div class="empty-state-icon">🗂️</div>
+          <div>批次不存在或已删除</div>
+          <button class="btn btn-primary" style="margin-top:16px" id="backToBatchList">← 返回批次列表</button>
+        </div>
+      </div>
+    `
+  }
+
+  const stats = store.getBatchStats(batchId)
+  const batchItems = store.getBatchChecklist(batchId)
+  const areaMap = new Map(s.areas.map(a => [a.id, a.name]))
+  const themeMap = new Map(s.themes.map(t => [t.id, t.name]))
+  const ciMap = new Map(s.checkItems.map(c => [c.id, c.name]))
+  const batchAlerts = store.getBatchAlerts(batchId)
+
+  const areaNames = batch.areaIds.map(id => areaMap.get(id)).filter(Boolean).join('、') || '全部区域'
+  const themeNames = batch.themeIds.map(id => themeMap.get(id)).filter(Boolean).join('、') || '全部主题'
+
+  const visibleCols = COLUMN_ORDER.filter(col => s.columns[col])
+
+  return `
+    <div class="batch-detail-container">
+      <div class="batch-detail-header">
+        <div class="batch-detail-back">
+          <button class="btn btn-sm" id="backToBatchList">← 返回列表</button>
+        </div>
+        <div class="batch-detail-title-wrap">
+          <h2 class="batch-detail-title">
+            ${esc(batch.name)}
+            <span class="batch-status-tag" style="background:${BATCH_STATUS_COLORS[batch.status]};margin-left:8px">
+              ${BATCH_STATUS_LABELS[batch.status]}
+            </span>
+          </h2>
+          <div class="batch-detail-subtitle">
+            <span>📅 ${esc(batch.date)}</span>
+            <span>📍 ${esc(areaNames)}</span>
+            <span>🎯 ${esc(themeNames)}</span>
+            <span>👤 ${esc(batch.responsible)}</span>
+            <span>🕐 创建于 ${formatTime(batch.createdAt)}</span>
+          </div>
+        </div>
+        <div class="batch-detail-actions">
+          <button class="btn" id="batchSummaryBtn">📝 生成复盘摘要</button>
+          ${!configReadOnly && batch.status === 'active' ? `
+            <button class="btn btn-danger" id="closeThisBatchBtn">关闭批次</button>
+          ` : ''}
+        </div>
+      </div>
+
+      <div class="batch-detail-stats">
+        <div class="dash-card" style="box-shadow:none;border:1px solid var(--border)">
+          <div class="dash-card-header">
+            <span class="dash-card-icon">📈</span>
+            <span class="dash-card-title">校对进度</span>
+          </div>
+          <div class="batch-stat-grid">
+            <div class="batch-stat-card">
+              <div class="batch-stat-big-num" style="color:var(--primary)">${stats.totalItems}</div>
+              <div class="batch-stat-card-label">总项数</div>
+            </div>
+            <div class="batch-stat-card">
+              <div class="batch-stat-big-num" style="color:var(--success)">${stats.checkedCount}</div>
+              <div class="batch-stat-card-label">已校对</div>
+            </div>
+            <div class="batch-stat-card">
+              <div class="batch-stat-big-num" style="color:var(--text-muted)">${stats.uncheckedCount}</div>
+              <div class="batch-stat-card-label">未校对</div>
+            </div>
+            <div class="batch-stat-card">
+              <div class="batch-stat-big-num" style="color:var(--danger)">${stats.issueCount}</div>
+              <div class="batch-stat-card-label">异常项</div>
+            </div>
+            <div class="batch-stat-card">
+              <div class="batch-stat-big-num" style="color:#f59e0b">${stats.totalAlerts}</div>
+              <div class="batch-stat-card-label">告警</div>
+            </div>
+            <div class="batch-stat-card">
+              <div class="batch-stat-big-num" style="color:#8b5cf6">${stats.activeRectifications}/${stats.activeRectifications + stats.completedRectifications}</div>
+              <div class="batch-stat-card-label">整改进度</div>
+            </div>
+          </div>
+          <div class="batch-detail-progress-wrap">
+            <div class="batch-detail-progress-label">
+              <span>校对完成率</span>
+              <span style="font-weight:600">${stats.checkProgress}%</span>
+            </div>
+            <div class="progress-bar" style="height:8px">
+              <div class="progress-fill" style="width:${stats.checkProgress}%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="batch-detail-list-title">
+        <h3>📋 批次核对清单（${batchItems.length} 项）</h3>
+      </div>
+
+      <div class="list-container" style="flex:1;min-height:0">
+        <div class="list-toolbar">
+          <div class="stats-info">
+            <span class="stats-badge total">共 ${stats.totalItems} 项</span>
+            <span class="stats-badge done">已校对 ${stats.checkedCount}</span>
+            <span class="stats-badge issue">问题 ${stats.issueCount}</span>
+            ${stats.activeRectifications > 0 ? `<span class="stats-badge" style="background:#ede9fe;color:#6d28d9">整改中 ${stats.activeRectifications}</span>` : ''}
+          </div>
+          <div class="progress-wrap">
+            <div class="progress-bar"><div class="progress-fill" style="width:${stats.checkProgress}%"></div></div>
+            <div class="progress-text">校对进度 ${stats.checkProgress}%</div>
+          </div>
+        </div>
+        <div class="list-scroll" id="listScroll">
+          ${batchItems.length === 0 ? `
+            <div class="empty-state">
+              <div class="empty-state-icon">📭</div>
+              <div>该批次下暂无核对清单</div>
+            </div>
+          ` : `
+            <table class="checklist-table">
+              <thead><tr>
+                <th class="checkbox-col"></th>
+                <th style="min-width:240px">陈列标题</th>
+                ${visibleCols.map(col => `<th>${COLUMN_LABELS[col]}</th>`).join('')}
+                ${!readOnly ? `<th style="width:180px">快速操作</th>` : ''}
+              </tr></thead>
+              <tbody>
+                ${batchItems.map(item => {
+                  const isHighlighted = s.ui.highlightedItemId === item.id
+                  const isSelected = s.ui.selectedItemId === item.id
+                  const isChecked = selectedCheckboxes.has(item.id)
+                  const itemAlerts = s.alerts.filter(a => a.itemId === item.id)
+                  const statusClass = item.status || 'unchecked'
+                  const statusText = item.status ? STATUS_LABELS[item.status] : '未校对'
+
+                  let cells = ''
+                  const col: Record<ColumnKey, () => string> = {
+                    area: () => `<td>${esc(areaMap.get(item.areaId) || '-')}</td>`,
+                    theme: () => `<td>${esc(themeMap.get(item.themeId) || '-')}</td>`,
+                    checkItem: () => `<td>${esc(item.checkItemId ? (ciMap.get(item.checkItemId) || '-') : '-')}</td>`,
+                    expectedPrice: () => `<td style="color:var(--danger);font-weight:600">${esc(item.expectedPrice || '-')}</td>`,
+                    hasPromoTag: () => `<td>${item.hasPromoTag ? '<span class="text-success">✓ 有</span>' : '<span class="text-muted">—</span>'}</td>`,
+                    responsible: () => `<td>${item.responsible ? `<span style="color:var(--primary);font-weight:500">${esc(item.responsible)}</span>` : '<span class="text-danger">未指定</span>'}</td>`,
+                    status: () => `<td class="status-col"><span class="status-tag ${statusClass}">${statusText}</span></td>`,
+                    updatedAt: () => `<td class="text-muted" style="white-space:nowrap">${formatTime(item.updatedAt)}</td>`,
+                    alerts: () => {
+                      const rectTasks = s.rectifications.filter(t => t.itemId === item.id && t.status !== 'closed')
+                      const activeRect = rectTasks[0]
+                      return `<td><div class="alert-tags">
+                        ${itemAlerts.slice(0, 3).map(a => `
+                          <span class="alert-tag" style="background:${ALERT_COLORS[a.type]}" title="${esc(ALERT_LABELS[a.type])}">${ALERT_LABELS[a.type].slice(0, 4)}</span>
+                        `).join('')}${itemAlerts.length > 3 ? `<span class="alert-tag" style="background:var(--text-muted)">+${itemAlerts.length - 3}</span>` : ''}
+                        ${activeRect ? `<span class="alert-tag" style="background:${RECTIFICATION_STATUS_COLORS[activeRect.status]};cursor:pointer" data-rect-locate="${activeRect.id}" title="整改: ${RECTIFICATION_STATUS_LABELS[activeRect.status]}">🔄${RECTIFICATION_STATUS_LABELS[activeRect.status].slice(0, 2)}</span>` : ''}
+                      </div></td>`
+                    }
+                  }
+                  visibleCols.forEach(k => { cells += col[k]() })
+
+                  const quickBtns = readOnly ? '' : `
+                    <td>
+                      <div class="quick-actions">
+                        <button class="quick-btn" data-quick="normal" data-id="${item.id}" title="正常 (1)">✓</button>
+                        <button class="quick-btn" data-quick="need_supply" data-id="${item.id}" title="需补充 (2)">+</button>
+                        <button class="quick-btn" data-quick="need_review" data-id="${item.id}" title="需复核 (3)">!</button>
+                        <button class="quick-btn" data-quick="pending" data-id="${item.id}" title="暂缓 (4)">⏸</button>
+                      </div>
+                    </td>
+                  `
+
+                  return `
+                    <tr class="${isHighlighted ? 'highlighted' : ''} ${isSelected ? 'selected' : ''}" data-row-id="${item.id}">
+                      <td class="checkbox-col"><input type="checkbox" class="row-chk" data-id="${item.id}" ${isChecked ? 'checked' : ''}/></td>
+                      <td>
+                        <div class="col-title">
+                          <div>
+                            <div class="title-main">${esc(item.title)}</div>
+                            <div class="title-sub">${esc(item.displayLocation || '')}</div>
+                          </div>
+                        </div>
+                      </td>
+                      ${cells}
+                      ${quickBtns}
+                    </tr>
+                  `
+                }).join('')}
+              </tbody>
+            </table>
+          `}
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function renderBatchCreateModal(s: AppState): string {
+  if (!s.ui.batchCreateModalOpen) {
+    return `<div class="modal-overlay" id="batchCreateOverlay"></div>`
+  }
+
+  const today = new Date().toISOString().slice(0, 10)
+
+  return `
+    <div class="modal-overlay open" id="batchCreateOverlay">
+      <div class="modal" style="max-width:600px">
+        <div class="modal-header">
+          <div class="modal-title">➕ 创建巡检批次</div>
+          <button class="close-btn" id="closeBatchCreateBtn">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-grid" style="grid-template-columns:1fr 1fr">
+            <div class="form-group full-width">
+              <label class="form-label">批次名称 <span class="required">*</span></label>
+              <input type="text" class="form-input" id="batchName" placeholder="例如：端午节前陈列巡检"/>
+            </div>
+            <div class="form-group">
+              <label class="form-label">巡检日期 <span class="required">*</span></label>
+              <input type="date" class="form-input" id="batchDate" value="${today}"/>
+            </div>
+            <div class="form-group">
+              <label class="form-label">负责人 <span class="required">*</span></label>
+              <input type="text" class="form-input" id="batchResponsible" value="${esc(s.currentUser)}" placeholder="负责人姓名"/>
+            </div>
+            <div class="form-group full-width">
+              <label class="form-label">门店区域 <span class="required">*</span></label>
+              <div class="checkbox-group">
+                ${s.areas.map(a => `
+                  <label class="checkbox-inline" style="flex:0 0 auto">
+                    <input type="checkbox" class="batch-area-chk" value="${esc(a.id)}" checked/>
+                    ${esc(a.name)}
+                  </label>
+                `).join('')}
+              </div>
+            </div>
+            <div class="form-group full-width">
+              <label class="form-label">陈列主题 <span class="required">*</span></label>
+              <div class="checkbox-group">
+                ${s.themes.map(t => {
+                  const areaName = s.areas.find(a => a.id === t.areaId)?.name || ''
+                  return `
+                    <label class="checkbox-inline" style="flex:0 0 auto">
+                      <input type="checkbox" class="batch-theme-chk" value="${esc(t.id)}" checked/>
+                      ${esc(areaName + ' / ' + t.name)}
+                    </label>
+                  `
+                }).join('')}
+              </div>
+            </div>
+          </div>
+          <div class="batch-create-hint" style="margin-top:16px;padding:12px;background:var(--bg);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary)">
+            💡 系统将根据所选区域和主题自动匹配对应的核对清单项目
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" id="closeBatchCreateBtn2">取消</button>
+          <button class="btn btn-primary" id="submitBatchBtn">创建批次</button>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function renderBatchSummaryModal(s: AppState): string {
+  if (!s.ui.batchSummaryModalOpen || !s.ui.selectedBatchId) {
+    return `<div class="modal-overlay" id="batchSummaryOverlay"></div>`
+  }
+
+  const summary = store.generateBatchSummary(s.ui.selectedBatchId)
+
+  return `
+    <div class="modal-overlay open" id="batchSummaryOverlay">
+      <div class="modal" style="max-width:680px">
+        <div class="modal-header">
+          <div class="modal-title">📝 批次复盘摘要</div>
+          <button class="close-btn" id="closeBatchSummaryBtn">×</button>
+        </div>
+        <div class="modal-body">
+          <div style="margin-bottom:12px">
+            <span class="text-muted" style="font-size:12px">
+              基于当前批次数据自动生成，可直接复制用于运营汇报
+            </span>
+          </div>
+          <div class="summary-content" id="batchSummaryContent">${esc(summary).replace(/\n/g, '<br>')}</div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" id="closeBatchSummaryBtn2">关闭</button>
+          <button class="btn btn-primary" id="copyBatchSummaryBtn">📋 复制全文</button>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function bindBatchEvents(): void {
+  // 批次列表筛选
+  document.querySelectorAll('[data-batch-filter]').forEach(el => {
+    el.addEventListener('click', () => {
+      const status = (el as HTMLElement).dataset.batchFilter as BatchStatus | 'all'
+      store.setBatchFilterStatus(status)
+    })
+  })
+
+  // 创建批次按钮
+  document.getElementById('createBatchBtn')?.addEventListener('click', () => {
+    store.setBatchCreateModalOpen(true)
+  })
+
+  // 创建批次模态框
+  document.getElementById('closeBatchCreateBtn')?.addEventListener('click', () => {
+    store.setBatchCreateModalOpen(false)
+  })
+  document.getElementById('closeBatchCreateBtn2')?.addEventListener('click', () => {
+    store.setBatchCreateModalOpen(false)
+  })
+  document.getElementById('batchCreateOverlay')?.addEventListener('click', (e) => {
+    if (e.target === document.getElementById('batchCreateOverlay')) {
+      store.setBatchCreateModalOpen(false)
+    }
+  })
+
+  document.getElementById('submitBatchBtn')?.addEventListener('click', () => {
+    const name = (document.getElementById('batchName') as HTMLInputElement).value.trim()
+    const date = (document.getElementById('batchDate') as HTMLInputElement).value
+    const responsible = (document.getElementById('batchResponsible') as HTMLInputElement).value.trim()
+
+    const areaChks = document.querySelectorAll('.batch-area-chk:checked') as NodeListOf<HTMLInputElement>
+    const areaIds = Array.from(areaChks).map(c => c.value)
+
+    const themeChks = document.querySelectorAll('.batch-theme-chk:checked') as NodeListOf<HTMLInputElement>
+    const themeIds = Array.from(themeChks).map(c => c.value)
+
+    if (!name) { alert('请输入批次名称'); return }
+    if (!date) { alert('请选择巡检日期'); return }
+    if (!responsible) { alert('请输入负责人'); return }
+    if (areaIds.length === 0) { alert('请至少选择一个门店区域'); return }
+    if (themeIds.length === 0) { alert('请至少选择一个陈列主题'); return }
+
+    store.createBatch(name, date, areaIds, themeIds, responsible)
+  })
+
+  // 返回批次列表
+  document.getElementById('backToBatchList')?.addEventListener('click', () => {
+    store.goBackToBatches()
+  })
+
+  // 查看批次详情
+  document.querySelectorAll('[data-view-batch]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const id = (btn as HTMLElement).dataset.viewBatch!
+      store.selectBatch(id)
+    })
+  })
+
+  // 批次卡片点击
+  document.querySelectorAll('[data-batch-id]').forEach(card => {
+    card.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('button')) return
+      const id = (card as HTMLElement).dataset.batchId!
+      store.selectBatch(id)
+    })
+  })
+
+  // 关闭批次
+  document.querySelectorAll('[data-close-batch]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const id = (btn as HTMLElement).dataset.closeBatch!
+      if (confirm('确定要关闭此巡检批次吗？关闭后将无法继续编辑。')) {
+        store.closeBatch(id)
+      }
+    })
+  })
+
+  document.getElementById('closeThisBatchBtn')?.addEventListener('click', () => {
+    if (confirm('确定要关闭此巡检批次吗？关闭后将无法继续编辑。')) {
+      const batchId = store.getState().ui.selectedBatchId
+      if (batchId) store.closeBatch(batchId)
+    }
+  })
+
+  // 批次复盘摘要
+  document.getElementById('batchSummaryBtn')?.addEventListener('click', () => {
+    store.setBatchSummaryModalOpen(true)
+  })
+
+  document.getElementById('closeBatchSummaryBtn')?.addEventListener('click', () => {
+    store.setBatchSummaryModalOpen(false)
+  })
+  document.getElementById('closeBatchSummaryBtn2')?.addEventListener('click', () => {
+    store.setBatchSummaryModalOpen(false)
+  })
+  document.getElementById('batchSummaryOverlay')?.addEventListener('click', (e) => {
+    if (e.target === document.getElementById('batchSummaryOverlay')) {
+      store.setBatchSummaryModalOpen(false)
+    }
+  })
+
+  document.getElementById('copyBatchSummaryBtn')?.addEventListener('click', async () => {
+    const batchId = store.getState().ui.selectedBatchId
+    if (!batchId) return
+    const summary = store.generateBatchSummary(batchId)
+    try {
+      await navigator.clipboard.writeText(summary)
+      const btn = document.getElementById('copyBatchSummaryBtn')
+      if (btn) {
+        const originalText = btn.textContent
+        btn.textContent = '✅ 已复制'
+        setTimeout(() => { btn.textContent = originalText }, 2000)
+      }
+    } catch {
+      const textarea = document.createElement('textarea')
+      textarea.value = summary
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+      const btn = document.getElementById('copyBatchSummaryBtn')
+      if (btn) {
+        const originalText = btn.textContent
+        btn.textContent = '✅ 已复制'
+        setTimeout(() => { btn.textContent = originalText }, 2000)
+      }
+    }
+  })
 }
 
 // ============ 入口 ============
@@ -2219,6 +2815,7 @@ function bootstrap(): void {
     render()
   })
   store.loadState()
+  render()
 }
 
 // DOMContentLoaded
