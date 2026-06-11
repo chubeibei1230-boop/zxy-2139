@@ -8,7 +8,10 @@ import type {
   AlertType,
   AuditStatus,
   FilterState,
-  UserRole
+  UserRole,
+  RectificationTask,
+  RectificationStatus,
+  RectificationHistoryEntry
 } from './types'
 import { DEFAULT_COLUMNS, DEFAULT_FILTERS } from './types'
 
@@ -107,6 +110,7 @@ function generateSampleData(): {
 function createInitialState(): AppState {
   const sample = generateSampleData()
   const alerts = computeAlertsFromChecklist(sample.checklist, sample.areas, sample.themes)
+  const rectifications = generateSampleRectifications(sample.checklist)
   return {
     currentRole: 'operator',
     currentUser: '张小明',
@@ -115,6 +119,7 @@ function createInitialState(): AppState {
     checkItems: sample.checkItems,
     checklist: sample.checklist,
     alerts,
+    rectifications,
     filters: { ...DEFAULT_FILTERS },
     columns: { ...DEFAULT_COLUMNS },
     ui: {
@@ -125,7 +130,12 @@ function createInitialState(): AppState {
       columnSettingsOpen: false,
       adminPanelOpen: false,
       importModalOpen: false,
-      currentAdminTab: 'areas'
+      currentAdminTab: 'areas',
+      rectificationPanelOpen: false,
+      rectificationFilterStatus: 'all',
+      selectedRectificationId: null,
+      rectificationFormOpen: false,
+      rectificationFormItemId: null
     },
     lastSavedAt: Date.now()
   }
@@ -207,6 +217,70 @@ function computeAlertsFromChecklist(
   return alerts
 }
 
+function generateSampleRectifications(checklist: ChecklistItem[]): RectificationTask[] {
+  const tasks: RectificationTask[] = []
+  const now = Date.now()
+  const problemItems = checklist.filter(
+    i => i.status === 'need_supply' || i.status === 'need_review' || i.status === 'pending'
+  )
+
+  problemItems.slice(0, 3).forEach((item, idx) => {
+    const statuses: RectificationStatus[] = ['pending', 'in_progress', 'completed']
+    const st = statuses[idx % 3]
+    const assignee = item.responsible || '张小明'
+    const createdAt = now - 86400000 * (3 - idx)
+    const history: RectificationHistoryEntry[] = [
+      {
+        fromStatus: null,
+        toStatus: 'pending',
+        operator: '系统',
+        remark: '从校对结果自动创建整改任务',
+        timestamp: createdAt
+      }
+    ]
+    if (st === 'in_progress') {
+      history.push({
+        fromStatus: 'pending',
+        toStatus: 'in_progress',
+        operator: assignee,
+        remark: '已开始处理',
+        timestamp: createdAt + 86400000
+      })
+    }
+    if (st === 'completed') {
+      history.push({
+        fromStatus: 'pending',
+        toStatus: 'in_progress',
+        operator: assignee,
+        remark: '已开始处理',
+        timestamp: createdAt + 86400000
+      })
+      history.push({
+        fromStatus: 'in_progress',
+        toStatus: 'completed',
+        operator: assignee,
+        remark: '整改完成',
+        timestamp: createdAt + 86400000 * 2
+      })
+    }
+
+    tasks.push({
+      id: uid('rect'),
+      itemId: item.id,
+      requirement: item.rectificationRemark || `对"${item.title}"进行整改，确保陈列符合标准`,
+      assignee,
+      planCompleteAt: now + 86400000 * (7 - idx * 2),
+      status: st,
+      createdBy: '系统',
+      createdAt,
+      updatedAt: history[history.length - 1].timestamp,
+      history
+    })
+  })
+
+  return tasks
+}
+
 export function loadState(): AppState {
   if (state) return state
   try {
@@ -216,6 +290,7 @@ export function loadState(): AppState {
       state = parsed
       if (!state.filters) state.filters = { ...DEFAULT_FILTERS }
       if (!state.columns) state.columns = { ...DEFAULT_COLUMNS }
+      if (!state.rectifications) state.rectifications = []
       if (!state.ui) {
         state.ui = {
           sidebarOpen: false,
@@ -225,8 +300,20 @@ export function loadState(): AppState {
           columnSettingsOpen: false,
           adminPanelOpen: false,
           importModalOpen: false,
-          currentAdminTab: 'areas'
+          currentAdminTab: 'areas',
+          rectificationPanelOpen: false,
+          rectificationFilterStatus: 'all',
+          selectedRectificationId: null,
+          rectificationFormOpen: false,
+          rectificationFormItemId: null
         }
+      }
+      if (state.ui.rectificationPanelOpen === undefined) {
+        state.ui.rectificationPanelOpen = false
+        state.ui.rectificationFilterStatus = 'all'
+        state.ui.selectedRectificationId = null
+        state.ui.rectificationFormOpen = false
+        state.ui.rectificationFormItemId = null
       }
       return state
     }
@@ -738,26 +825,37 @@ export function exportChecklistToCSV(): string {
   const themeMap = new Map(s.themes.map(t => [t.id, t.name]))
   const ciMap = new Map(s.checkItems.map(c => [c.id, c.name]))
 
-  const headers = ['标题', '区域', '陈列主题', '检查项', '期望价格', '促销标记', '责任人', '陈列位置', '校对状态', '备注', '整改备注', '缺失说明', '最后更新']
+  const headers = ['标题', '区域', '陈列主题', '检查项', '期望价格', '促销标记', '责任人', '陈列位置', '校对状态', '备注', '整改备注', '缺失说明', '最后更新', '整改任务状态', '整改要求', '整改责任人', '整改计划完成时间']
   const statusLabels: Record<string, string> = {
     normal: '正常', need_supply: '需补充', need_review: '需复核', pending: '暂缓处理'
   }
+  const rectStatusLabels: Record<string, string> = {
+    pending: '待处理', in_progress: '处理中', completed: '已完成', closed: '已关闭'
+  }
 
-  const rows = filtered.map(item => [
-    item.title,
-    areaMap.get(item.areaId) || '',
-    themeMap.get(item.themeId) || '',
-    item.checkItemId ? (ciMap.get(item.checkItemId) || '') : '',
-    item.expectedPrice || '',
-    item.hasPromoTag ? '有' : '无',
-    item.responsible || '',
-    item.displayLocation || '',
-    item.status ? statusLabels[item.status] : '未校对',
-    item.notes,
-    item.rectificationRemark,
-    item.missingExplanation,
-    new Date(item.updatedAt).toLocaleString('zh-CN')
-  ])
+  const rows = filtered.map(item => {
+    const rectTasks = s.rectifications.filter(t => t.itemId === item.id)
+    const activeRect = rectTasks.find(t => t.status !== 'closed') || rectTasks[rectTasks.length - 1]
+    return [
+      item.title,
+      areaMap.get(item.areaId) || '',
+      themeMap.get(item.themeId) || '',
+      item.checkItemId ? (ciMap.get(item.checkItemId) || '') : '',
+      item.expectedPrice || '',
+      item.hasPromoTag ? '有' : '无',
+      item.responsible || '',
+      item.displayLocation || '',
+      item.status ? statusLabels[item.status] : '未校对',
+      item.notes,
+      item.rectificationRemark,
+      item.missingExplanation,
+      new Date(item.updatedAt).toLocaleString('zh-CN'),
+      activeRect ? rectStatusLabels[activeRect.status] : '',
+      activeRect ? activeRect.requirement : '',
+      activeRect ? activeRect.assignee : '',
+      activeRect && activeRect.planCompleteAt ? new Date(activeRect.planCompleteAt).toLocaleDateString('zh-CN') : ''
+    ]
+  })
 
   const csvLines = [headers, ...rows].map(row =>
     row.map(cell => {
@@ -771,4 +869,134 @@ export function exportChecklistToCSV(): string {
 export function clearAllData(): void {
   localStorage.removeItem(STORAGE_KEY)
   state = null
+}
+
+export function addRectificationTask(
+  itemId: string,
+  requirement: string,
+  assignee: string,
+  planCompleteAt: number | null
+): AppState {
+  return setState(s => {
+    const now = Date.now()
+    const task: RectificationTask = {
+      id: uid('rect'),
+      itemId,
+      requirement,
+      assignee,
+      planCompleteAt,
+      status: 'pending',
+      createdBy: s.currentUser,
+      createdAt: now,
+      updatedAt: now,
+      history: [
+        {
+          fromStatus: null,
+          toStatus: 'pending',
+          operator: s.currentUser,
+          remark: '创建整改任务',
+          timestamp: now
+        }
+      ]
+    }
+    s.rectifications.push(task)
+  })
+}
+
+export function updateRectificationStatus(
+  id: string,
+  newStatus: RectificationStatus,
+  remark: string
+): AppState {
+  return setState(s => {
+    const task = s.rectifications.find(t => t.id === id)
+    if (!task) return
+    if (task.status === newStatus) return
+
+    const validTransitions: Record<RectificationStatus, RectificationStatus[]> = {
+      pending: ['in_progress', 'closed'],
+      in_progress: ['completed', 'closed'],
+      completed: ['closed'],
+      closed: []
+    }
+    if (!validTransitions[task.status].includes(newStatus)) return
+
+    const now = Date.now()
+    task.history.push({
+      fromStatus: task.status,
+      toStatus: newStatus,
+      operator: s.currentUser,
+      remark,
+      timestamp: now
+    })
+    task.status = newStatus
+    task.updatedAt = now
+
+    if (newStatus === 'closed') {
+      task.closedBy = s.currentUser
+      task.closedAt = now
+    }
+
+    if (newStatus === 'completed') {
+      const item = s.checklist.find(c => c.id === task.itemId)
+      if (item && item.status !== 'normal') {
+        item.status = 'normal'
+        item.updatedAt = now
+        item.verifiedBy = s.currentUser
+        item.verifiedAt = now
+      }
+      recomputeAlerts(s)
+    }
+  })
+}
+
+export function getRectificationsForItem(itemId: string): RectificationTask[] {
+  const s = loadState()
+  return s.rectifications.filter(t => t.itemId === itemId)
+}
+
+export function getFilteredRectifications(status: RectificationStatus | 'all'): RectificationTask[] {
+  const s = loadState()
+  if (status === 'all') return s.rectifications
+  return s.rectifications.filter(t => t.status === status)
+}
+
+export function setRectificationPanelOpen(open: boolean): AppState {
+  return setState(s => { s.ui.rectificationPanelOpen = open })
+}
+
+export function setRectificationFilterStatus(status: RectificationStatus | 'all'): AppState {
+  return setState(s => { s.ui.rectificationFilterStatus = status })
+}
+
+export function selectRectification(id: string | null): AppState {
+  return setState(s => { s.ui.selectedRectificationId = id })
+}
+
+export function setRectificationFormOpen(open: boolean, itemId?: string | null): AppState {
+  return setState(s => {
+    s.ui.rectificationFormOpen = open
+    s.ui.rectificationFormItemId = itemId ?? null
+  })
+}
+
+export function getActiveRectificationCount(): number {
+  const s = loadState()
+  return s.rectifications.filter(t => t.status === 'pending' || t.status === 'in_progress').length
+}
+
+export function locateRectificationFromAlert(alertId: string): AppState {
+  return setState(s => {
+    const alert = s.alerts.find(a => a.id === alertId)
+    if (!alert) return
+    const task = s.rectifications.find(t => t.itemId === alert.itemId && t.status !== 'closed')
+    if (!task) {
+      s.ui.rectificationFormItemId = alert.itemId
+      s.ui.rectificationFormOpen = true
+      s.ui.rectificationPanelOpen = true
+      return
+    }
+    s.ui.rectificationPanelOpen = true
+    s.ui.selectedRectificationId = task.id
+  })
 }

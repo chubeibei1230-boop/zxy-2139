@@ -2,6 +2,31 @@ export type UserRole = 'admin' | 'operator' | 'auditor'
 
 export type AuditStatus = 'normal' | 'need_supply' | 'need_review' | 'pending'
 
+export type RectificationStatus = 'pending' | 'in_progress' | 'completed' | 'closed'
+
+export interface RectificationTask {
+  id: string
+  itemId: string
+  requirement: string
+  assignee: string
+  planCompleteAt: number | null
+  status: RectificationStatus
+  createdBy: string
+  createdAt: number
+  updatedAt: number
+  closedBy?: string
+  closedAt?: number
+  history: RectificationHistoryEntry[]
+}
+
+export interface RectificationHistoryEntry {
+  fromStatus: RectificationStatus | null
+  toStatus: RectificationStatus
+  operator: string
+  remark: string
+  timestamp: number
+}
+
 export type AlertType =
   | 'price_tag_missing'
   | 'theme_mismatch'
@@ -95,6 +120,11 @@ export interface UiState {
   adminPanelOpen: boolean
   importModalOpen: boolean
   currentAdminTab: 'areas' | 'themes' | 'checkItems'
+  rectificationPanelOpen: boolean
+  rectificationFilterStatus: RectificationStatus | 'all'
+  selectedRectificationId: string | null
+  rectificationFormOpen: boolean
+  rectificationFormItemId: string | null
 }
 
 export interface AppState {
@@ -105,6 +135,7 @@ export interface AppState {
   checkItems: CheckItem[]
   checklist: ChecklistItem[]
   alerts: AlertRecord[]
+  rectifications: RectificationTask[]
   filters: FilterState
   columns: ColumnConfig
   ui: UiState
@@ -159,6 +190,20 @@ export const DEFAULT_COLUMNS: ColumnConfig = {
   status: true,
   updatedAt: true,
   alerts: true
+}
+
+export const RECTIFICATION_STATUS_LABELS: Record<RectificationStatus, string> = {
+  pending: '待处理',
+  in_progress: '处理中',
+  completed: '已完成',
+  closed: '已关闭'
+}
+
+export const RECTIFICATION_STATUS_COLORS: Record<RectificationStatus, string> = {
+  pending: '#f59e0b',
+  in_progress: '#3b82f6',
+  completed: '#10b981',
+  closed: '#6b7280'
 }
 
 export const DEFAULT_FILTERS: FilterState = {

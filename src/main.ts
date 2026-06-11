@@ -9,7 +9,9 @@ import type {
   StoreArea,
   DisplayTheme,
   CheckItem,
-  ColumnConfig
+  ColumnConfig,
+  RectificationTask,
+  RectificationStatus
 } from './types'
 import {
   STATUS_LABELS,
@@ -17,7 +19,9 @@ import {
   ALERT_LABELS,
   ALERT_COLORS,
   ROLE_LABELS,
-  DEFAULT_COLUMNS
+  DEFAULT_COLUMNS,
+  RECTIFICATION_STATUS_LABELS,
+  RECTIFICATION_STATUS_COLORS
 } from './types'
 import * as store from './store'
 
@@ -90,6 +94,8 @@ function render(): void {
         ${renderAlertPanel(s)}
       </div>
       ${renderDetailSidebar(s, readOnly)}
+      ${renderRectificationPanel(s)}
+      ${renderRectificationFormModal(s)}
       ${renderAdminModal(s, configReadOnly)}
       ${renderImportModal(s, readOnly)}
       ${renderColumnPopover(s)}
@@ -129,6 +135,10 @@ function renderToolbar(s: AppState, configReadOnly: boolean): string {
         <button class="filter-btn ${s.ui.alertPanelOpen ? 'active' : ''}" id="toggleAlertBtn" title="告警面板">
           <span>🔔 告警</span>
           ${s.alerts.length > 0 ? `<span class="filter-badge" style="background:${ALERT_COLORS.price_tag_missing}">${s.alerts.length}</span>` : ''}
+        </button>
+        <button class="filter-btn ${s.ui.rectificationPanelOpen ? 'active' : ''}" id="toggleRectBtn" title="整改闭环跟踪">
+          <span>🔄 整改</span>
+          ${store.getActiveRectificationCount() > 0 ? `<span class="filter-badge" style="background:#8b5cf6">${store.getActiveRectificationCount()}</span>` : ''}
         </button>
       </div>
       <div class="toolbar-right">
@@ -222,6 +232,7 @@ function renderListArea(s: AppState, readOnly: boolean): string {
   const total = filtered.length
   const done = filtered.filter(i => i.status !== null).length
   const issues = filtered.filter(i => i.status === 'need_supply' || i.status === 'need_review').length
+  const activeRectCount = s.rectifications.filter(t => t.status === 'pending' || t.status === 'in_progress').length
   const progress = total > 0 ? Math.round((done / total) * 100) : 0
 
   const visibleCols = COLUMN_ORDER.filter(col => s.columns[col])
@@ -254,9 +265,16 @@ function renderListArea(s: AppState, readOnly: boolean): string {
       responsible: () => `<td>${item.responsible ? `<span style="color:var(--primary);font-weight:500">${esc(item.responsible)}</span>` : '<span class="text-danger">未指定</span>'}</td>`,
       status: () => `<td class="status-col"><span class="status-tag ${statusClass}">${statusText}</span></td>`,
       updatedAt: () => `<td class="text-muted" style="white-space:nowrap">${formatTime(item.updatedAt)}</td>`,
-      alerts: () => `<td><div class="alert-tags">${itemAlerts.slice(0, 3).map(a => `
-        <span class="alert-tag" style="background:${ALERT_COLORS[a.type]}" title="${esc(ALERT_LABELS[a.type])}">${ALERT_LABELS[a.type].slice(0, 4)}</span>
-      `).join('')}${itemAlerts.length > 3 ? `<span class="alert-tag" style="background:var(--text-muted)">+${itemAlerts.length - 3}</span>` : ''}</div></td>`
+      alerts: () => {
+        const rectTasks = s.rectifications.filter(t => t.itemId === item.id && t.status !== 'closed')
+        const activeRect = rectTasks[0]
+        return `<td><div class="alert-tags">
+          ${itemAlerts.slice(0, 3).map(a => `
+            <span class="alert-tag" style="background:${ALERT_COLORS[a.type]}" title="${esc(ALERT_LABELS[a.type])}">${ALERT_LABELS[a.type].slice(0, 4)}</span>
+          `).join('')}${itemAlerts.length > 3 ? `<span class="alert-tag" style="background:var(--text-muted)">+${itemAlerts.length - 3}</span>` : ''}
+          ${activeRect ? `<span class="alert-tag" style="background:${RECTIFICATION_STATUS_COLORS[activeRect.status]};cursor:pointer" data-rect-locate="${activeRect.id}" title="整改: ${RECTIFICATION_STATUS_LABELS[activeRect.status]}">🔄${RECTIFICATION_STATUS_LABELS[activeRect.status].slice(0, 2)}</span>` : ''}
+        </div></td>`
+      }
     }
     visibleCols.forEach(k => { cells += col[k]() })
 
@@ -295,6 +313,7 @@ function renderListArea(s: AppState, readOnly: boolean): string {
           <span class="stats-badge total">共 ${total} 项</span>
           <span class="stats-badge done">已校对 ${done}</span>
           <span class="stats-badge issue">问题 ${issues}</span>
+          ${activeRectCount > 0 ? `<span class="stats-badge" style="background:#ede9fe;color:#6d28d9">整改中 ${activeRectCount}</span>` : ''}
           <span class="hotkey-hint">N 下一条告警</span>
           <span class="hotkey-hint">1-4 标记状态</span>
         </div>
@@ -387,7 +406,10 @@ function renderAlertPanel(s: AppState): string {
                     <div class="alert-msg">${esc(a.message)}</div>
                     <div class="alert-meta">
                       <span>${formatTime(a.createdAt)}</span>
-                      <span>${a.acknowledged ? '已查看' : ''}</span>
+                      <div style="display:flex;gap:6px;align-items:center">
+                        ${s.rectifications.some(t => t.itemId === a.itemId && t.status !== 'closed') ? `<span class="alert-rect-link" data-alert-rect="${a.id}">🔄整改</span>` : ''}
+                        <span>${a.acknowledged ? '已查看' : ''}</span>
+                      </div>
                     </div>
                   </div>
                 `).join('')}
@@ -542,6 +564,49 @@ function renderDetailSidebar(s: AppState, readOnly: boolean): string {
             </div>
           </div>
         </div>
+
+        <div class="form-section">
+          <div class="section-title">🔄 整改任务</div>
+          ${(() => {
+            const rectTasks = store.getRectificationsForItem(item.id)
+            const activeRects = rectTasks.filter(t => t.status !== 'closed')
+            const closedRects = rectTasks.filter(t => t.status === 'closed')
+            const canCreateRect = canEdit(s.currentRole) && (item.status === 'need_supply' || item.status === 'need_review' || item.status === 'pending')
+            return `
+              ${canCreateRect ? `
+                <button class="btn btn-sm" style="margin-bottom:10px;width:100%" id="createRectBtn" data-rect-item-id="${item.id}">➕ 发起整改</button>
+              ` : ''}
+              ${activeRects.length === 0 && closedRects.length === 0 ? `
+                <div class="text-muted" style="font-size:12px;text-align:center;padding:8px">暂无整改任务</div>
+              ` : ''}
+              ${activeRects.map(t => `
+                <div class="rect-sidebar-card">
+                  <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+                    <span class="rect-status-tag" style="background:${RECTIFICATION_STATUS_COLORS[t.status]}">${RECTIFICATION_STATUS_LABELS[t.status]}</span>
+                    <span class="text-muted" style="font-size:11px;margin-left:auto">${formatTime(t.updatedAt)}</span>
+                  </div>
+                  <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px">${esc(t.requirement)}</div>
+                  <div style="font-size:11px;color:var(--text-muted)">👤 ${esc(t.assignee)} ${t.planCompleteAt ? `· 📅 ${new Date(t.planCompleteAt).toLocaleDateString('zh-CN')}` : ''}</div>
+                  <button class="btn btn-sm" style="margin-top:6px;font-size:11px" data-view-rect="${t.id}">查看详情</button>
+                </div>
+              `).join('')}
+              ${closedRects.length > 0 ? `
+                <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+                  <div class="text-muted" style="font-size:11px;margin-bottom:6px">已关闭 (${closedRects.length})</div>
+                  ${closedRects.slice(0, 3).map(t => `
+                    <div class="rect-sidebar-card" style="opacity:0.6">
+                      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+                        <span class="rect-status-tag" style="background:${RECTIFICATION_STATUS_COLORS[t.status]}">${RECTIFICATION_STATUS_LABELS[t.status]}</span>
+                        <span class="text-muted" style="font-size:11px;margin-left:auto">${formatTime(t.updatedAt)}</span>
+                      </div>
+                      <div style="font-size:11px;color:var(--text-muted)">${esc(t.requirement).slice(0, 40)}${t.requirement.length > 40 ? '…' : ''}</div>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : ''}
+            `
+          })()}
+        </div>
       </div>
       <div class="sidebar-footer">
         ${!readOnly ? `
@@ -552,6 +617,230 @@ function renderDetailSidebar(s: AppState, readOnly: boolean): string {
           <button class="btn" id="resetDraftBtn">放弃修改</button>
           <button class="btn btn-primary" id="saveItemBtn">💾 保存更改</button>
         ` : ''}
+      </div>
+    </div>
+  `
+}
+
+function renderRectificationPanel(s: AppState): string {
+  if (!s.ui.rectificationPanelOpen) {
+    return `<div class="rect-panel closed"></div>`
+  }
+
+  const filterStatus = s.ui.rectificationFilterStatus
+  const filtered = store.getFilteredRectifications(filterStatus)
+  const areaMap = new Map(s.areas.map(a => [a.id, a.name]))
+  const themeMap = new Map(s.themes.map(t => [t.id, t.name]))
+  const canEditRect = canEdit(s.currentRole)
+
+  const totalCounts: Record<string, number> = { all: s.rectifications.length }
+  ;(['pending', 'in_progress', 'completed', 'closed'] as RectificationStatus[]).forEach(st => {
+    totalCounts[st] = s.rectifications.filter(t => t.status === st).length
+  })
+
+  const selectedTask = s.ui.selectedRectificationId
+    ? s.rectifications.find(t => t.id === s.ui.selectedRectificationId)
+    : null
+
+  return `
+    <div class="rect-panel" id="rectPanel">
+      <div class="rect-panel-header">
+        <div class="rect-panel-title">
+          🔄 整改闭环跟踪
+          <span class="alert-count-badge" style="background:#8b5cf6">${s.rectifications.length}</span>
+        </div>
+        <button class="close-btn" id="closeRectBtn" title="关闭">×</button>
+      </div>
+      <div class="rect-filter-bar">
+        <span class="rect-filter-chip ${filterStatus === 'all' ? 'active' : ''}" data-rect-filter="all">全部 ${totalCounts.all}</span>
+        ${(['pending', 'in_progress', 'completed', 'closed'] as RectificationStatus[]).map(st => `
+          <span class="rect-filter-chip ${filterStatus === st ? 'active' : ''}"
+            data-rect-filter="${st}"
+            style="${filterStatus === st ? `background:${RECTIFICATION_STATUS_COLORS[st]};border-color:${RECTIFICATION_STATUS_COLORS[st]};color:white` : ''}">
+            ${RECTIFICATION_STATUS_LABELS[st]} ${totalCounts[st]}
+          </span>
+        `).join('')}
+      </div>
+      <div class="rect-panel-body">
+        ${filtered.length === 0 ? `
+          <div class="empty-state">
+            <div class="empty-state-icon">📋</div>
+            <div>暂无整改任务</div>
+            <div style="margin-top:6px;font-size:12px">可在清单详情中发起整改</div>
+          </div>
+        ` : filtered.map(task => {
+          const item = s.checklist.find(c => c.id === task.itemId)
+          const areaName = item ? (areaMap.get(item.areaId) || '-') : '-'
+          const themeName = item ? (themeMap.get(item.themeId) || '-') : '-'
+          const isSelected = s.ui.selectedRectificationId === task.id
+          const isOverdue = task.planCompleteAt && task.planCompleteAt < Date.now() && task.status !== 'completed' && task.status !== 'closed'
+
+          return `
+            <div class="rect-task-card ${isSelected ? 'selected' : ''} ${isOverdue ? 'overdue' : ''}" data-rect-id="${task.id}">
+              <div class="rect-task-header">
+                <span class="rect-status-tag" style="background:${RECTIFICATION_STATUS_COLORS[task.status]}">${RECTIFICATION_STATUS_LABELS[task.status]}</span>
+                ${isOverdue ? '<span class="rect-overdue-tag">已逾期</span>' : ''}
+                <span class="rect-task-time">${formatTime(task.updatedAt)}</span>
+              </div>
+              <div class="rect-task-title">${item ? esc(item.title) : '(关联清单项已删除)'}</div>
+              <div class="rect-task-meta">
+                <span>📍 ${esc(areaName)}</span>
+                <span>👤 ${esc(task.assignee)}</span>
+                ${task.planCompleteAt ? `<span>📅 ${new Date(task.planCompleteAt).toLocaleDateString('zh-CN')}</span>` : ''}
+              </div>
+              <div class="rect-task-req">${esc(task.requirement)}</div>
+            </div>
+          `
+        }).join('')}
+      </div>
+      ${selectedTask ? renderRectDetail(s, selectedTask, canEditRect) : ''}
+    </div>
+  `
+}
+
+function renderRectDetail(s: AppState, task: RectificationTask, canEditRect: boolean): string {
+  const item = s.checklist.find(c => c.id === task.itemId)
+  const areaMap = new Map(s.areas.map(a => [a.id, a.name]))
+  const areaName = item ? (areaMap.get(item.areaId) || '-') : '-'
+  const isOverdue = task.planCompleteAt && task.planCompleteAt < Date.now() && task.status !== 'completed' && task.status !== 'closed'
+
+  const nextActions: Record<RectificationStatus, Array<{ status: RectificationStatus; label: string; color: string }>> = {
+    pending: [
+      { status: 'in_progress', label: '开始处理', color: '#3b82f6' },
+      { status: 'closed', label: '关闭任务', color: '#6b7280' }
+    ],
+    in_progress: [
+      { status: 'completed', label: '标记完成', color: '#10b981' },
+      { status: 'closed', label: '关闭任务', color: '#6b7280' }
+    ],
+    completed: [
+      { status: 'closed', label: '关闭复核', color: '#6b7280' }
+    ],
+    closed: []
+  }
+
+  return `
+    <div class="rect-detail-panel">
+      <div class="rect-detail-header">
+        <div style="font-weight:600;font-size:14px">整改详情</div>
+        <button class="close-btn" id="closeRectDetailBtn" title="关闭详情" style="width:24px;height:24px;font-size:14px">×</button>
+      </div>
+      <div class="rect-detail-body">
+        <div class="rect-detail-section">
+          <div class="rect-detail-label">关联清单项</div>
+          <div class="rect-detail-value">${item ? esc(item.title) : '(已删除)'}</div>
+          ${item ? `<div class="rect-detail-sub">📍 ${esc(areaName)} · ${esc(item.displayLocation || '')}</div>` : ''}
+        </div>
+        <div class="rect-detail-section">
+          <div class="rect-detail-label">整改要求</div>
+          <div class="rect-detail-value">${esc(task.requirement)}</div>
+        </div>
+        <div class="rect-detail-section">
+          <div class="rect-detail-label">责任人</div>
+          <div class="rect-detail-value">${esc(task.assignee)}</div>
+        </div>
+        <div class="rect-detail-section">
+          <div class="rect-detail-label">计划完成时间</div>
+          <div class="rect-detail-value ${isOverdue ? 'text-danger' : ''}">
+            ${task.planCompleteAt ? new Date(task.planCompleteAt).toLocaleString('zh-CN') : '未设置'}
+            ${isOverdue ? ' (已逾期)' : ''}
+          </div>
+        </div>
+        <div class="rect-detail-section">
+          <div class="rect-detail-label">创建人 / 创建时间</div>
+          <div class="rect-detail-value">${esc(task.createdBy)} · ${new Date(task.createdAt).toLocaleString('zh-CN')}</div>
+        </div>
+        ${task.closedBy ? `
+          <div class="rect-detail-section">
+            <div class="rect-detail-label">关闭人 / 关闭时间</div>
+            <div class="rect-detail-value">${esc(task.closedBy)} · ${new Date(task.closedAt!).toLocaleString('zh-CN')}</div>
+          </div>
+        ` : ''}
+
+        ${canEditRect && nextActions[task.status].length > 0 ? `
+          <div class="rect-detail-section">
+            <div class="rect-detail-label">操作</div>
+            <div class="rect-detail-actions">
+              <textarea class="form-textarea" id="rectActionRemark" placeholder="填写操作备注…" style="min-height:48px;margin-bottom:8px"></textarea>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                ${nextActions[task.status].map(a => `
+                  <button class="btn btn-sm" style="background:${a.color};border-color:${a.color};color:white" data-rect-action="${a.status}" data-rect-id="${task.id}">${a.label}</button>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+        ` : ''}
+
+        <div class="rect-detail-section">
+          <div class="rect-detail-label">流转记录</div>
+          <div class="rect-timeline">
+            ${task.history.map((entry, idx) => {
+              const fromLabel = entry.fromStatus ? RECTIFICATION_STATUS_LABELS[entry.fromStatus] : '—'
+              const toLabel = RECTIFICATION_STATUS_LABELS[entry.toStatus]
+              const toColor = RECTIFICATION_STATUS_COLORS[entry.toStatus]
+              return `
+                <div class="rect-timeline-item ${idx === task.history.length - 1 ? 'last' : ''}">
+                  <div class="rect-timeline-dot" style="background:${toColor}"></div>
+                  <div class="rect-timeline-content">
+                    <div class="rect-timeline-title">
+                      ${fromLabel} → <span style="color:${toColor};font-weight:600">${toLabel}</span>
+                    </div>
+                    <div class="rect-timeline-remark">${esc(entry.remark)}</div>
+                    <div class="rect-timeline-meta">${esc(entry.operator)} · ${new Date(entry.timestamp).toLocaleString('zh-CN')}</div>
+                  </div>
+                </div>
+              `
+            }).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function renderRectificationFormModal(s: AppState): string {
+  if (!s.ui.rectificationFormOpen) {
+    return `<div class="modal-overlay" id="rectFormOverlay"></div>`
+  }
+
+  const targetItemId = s.ui.rectificationFormItemId
+  const targetItem = targetItemId ? s.checklist.find(c => c.id === targetItemId) : null
+
+  return `
+    <div class="modal-overlay open" id="rectFormOverlay">
+      <div class="modal" style="max-width:520px">
+        <div class="modal-header">
+          <div class="modal-title">🔄 发起整改任务</div>
+          <button class="close-btn" id="closeRectFormBtn">×</button>
+        </div>
+        <div class="modal-body">
+          ${targetItem ? `
+            <div style="background:var(--bg);padding:12px;border-radius:var(--radius-sm);margin-bottom:16px;border:1px solid var(--border)">
+              <div style="font-weight:600;margin-bottom:4px">${esc(targetItem.title)}</div>
+              <div style="font-size:12px;color:var(--text-secondary)">
+                当前状态：<span class="status-tag ${targetItem.status || 'unchecked'}" style="font-size:11px">${targetItem.status ? STATUS_LABELS[targetItem.status] : '未校对'}</span>
+              </div>
+            </div>
+          ` : ''}
+          <div class="form-grid" style="grid-template-columns:1fr">
+            <div class="form-group full-width">
+              <label class="form-label">整改要求 <span class="required">*</span></label>
+              <textarea class="form-textarea" id="rectRequirement" placeholder="请描述需要整改的具体内容和标准…" style="min-height:80px">${targetItem?.rectificationRemark || ''}</textarea>
+            </div>
+            <div class="form-group full-width">
+              <label class="form-label">责任人 <span class="required">*</span></label>
+              <input type="text" class="form-input" id="rectAssignee" value="${esc(targetItem?.responsible || s.currentUser)}" placeholder="责任人姓名"/>
+            </div>
+            <div class="form-group full-width">
+              <label class="form-label">计划完成时间</label>
+              <input type="date" class="form-input" id="rectPlanDate"/>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" id="closeRectFormBtn2">取消</button>
+          <button class="btn btn-primary" id="submitRectBtn" data-item-id="${targetItemId || ''}">提交整改任务</button>
+        </div>
       </div>
     </div>
   `
@@ -822,6 +1111,12 @@ function bindEvents(): void {
   document.getElementById('closeAlertBtn')?.addEventListener('click', () => {
     store.setAlertPanelOpen(false)
   })
+  document.getElementById('toggleRectBtn')?.addEventListener('click', () => {
+    store.setRectificationPanelOpen(!s.ui.rectificationPanelOpen)
+  })
+  document.getElementById('closeRectBtn')?.addEventListener('click', () => {
+    store.setRectificationPanelOpen(false)
+  })
   document.getElementById('exportBtn')?.addEventListener('click', handleExport)
   document.getElementById('columnBtn')?.addEventListener('click', toggleColumnPanel)
   document.getElementById('adminBtn')?.addEventListener('click', () => {
@@ -879,6 +1174,101 @@ function bindEvents(): void {
         }
         setTimeout(() => store.highlightItem(null), 2500)
       })
+    })
+  })
+
+  // 整改面板筛选
+  document.querySelectorAll('[data-rect-filter]').forEach(el => {
+    el.addEventListener('click', () => {
+      const filter = (el as HTMLElement).dataset.rectFilter as RectificationStatus | 'all'
+      store.setRectificationFilterStatus(filter)
+    })
+  })
+
+  // 整改任务卡片点击
+  document.querySelectorAll('[data-rect-id]').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = (el as HTMLElement).dataset.rectId!
+      const currentState = store.getState()
+      if (currentState.ui.selectedRectificationId === id) {
+        store.selectRectification(null)
+      } else {
+        store.selectRectification(id)
+      }
+    })
+  })
+
+  // 整改详情关闭
+  document.getElementById('closeRectDetailBtn')?.addEventListener('click', () => {
+    store.selectRectification(null)
+  })
+
+  // 整改状态操作
+  document.querySelectorAll('[data-rect-action]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const newStatus = (btn as HTMLElement).dataset.rectAction as RectificationStatus
+      const taskId = (btn as HTMLElement).dataset.rectId!
+      const remarkEl = document.getElementById('rectActionRemark') as HTMLTextAreaElement | null
+      const remark = remarkEl?.value?.trim() || ''
+      store.updateRectificationStatus(taskId, newStatus, remark)
+    })
+  })
+
+  // 整改表单模态
+  document.getElementById('closeRectFormBtn')?.addEventListener('click', () => {
+    store.setRectificationFormOpen(false)
+  })
+  document.getElementById('closeRectFormBtn2')?.addEventListener('click', () => {
+    store.setRectificationFormOpen(false)
+  })
+  document.getElementById('rectFormOverlay')?.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement | null
+    if (target && target.id === 'rectFormOverlay') store.setRectificationFormOpen(false)
+  })
+  document.getElementById('submitRectBtn')?.addEventListener('click', () => {
+    const itemId = (document.getElementById('submitRectBtn') as HTMLElement).dataset.itemId!
+    const requirement = (document.getElementById('rectRequirement') as HTMLTextAreaElement).value.trim()
+    const assignee = (document.getElementById('rectAssignee') as HTMLInputElement).value.trim()
+    const planDate = (document.getElementById('rectPlanDate') as HTMLInputElement).value
+    if (!requirement) { alert('请填写整改要求'); return }
+    if (!assignee) { alert('请填写责任人'); return }
+    const planCompleteAt = planDate ? new Date(planDate + 'T23:59:59').getTime() : null
+    store.addRectificationTask(itemId, requirement, assignee, planCompleteAt)
+    store.setRectificationFormOpen(false)
+  })
+
+  // 侧边栏中的"发起整改"按钮
+  document.getElementById('createRectBtn')?.addEventListener('click', () => {
+    const itemId = (document.getElementById('createRectBtn') as HTMLElement).dataset.rectItemId!
+    store.setRectificationFormOpen(true, itemId)
+  })
+
+  // 侧边栏中的"查看详情"按钮（整改任务）
+  document.querySelectorAll('[data-view-rect]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const rectId = (btn as HTMLElement).dataset.viewRect!
+      store.setRectificationPanelOpen(true)
+      store.selectRectification(rectId)
+    })
+  })
+
+  // 列表中的整改定位标签
+  document.querySelectorAll('[data-rect-locate]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const rectId = (el as HTMLElement).dataset.rectLocate!
+      store.setRectificationPanelOpen(true)
+      store.selectRectification(rectId)
+    })
+  })
+
+  // 告警面板中的"整改"链接
+  document.querySelectorAll('[data-alert-rect]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const alertId = (el as HTMLElement).dataset.alertRect!
+      store.locateRectificationFromAlert(alertId)
     })
   })
 
@@ -1440,6 +1830,7 @@ function handleKeydown(e: KeyboardEvent): void {
 
   // 按 Escape 关闭侧边栏或弹层
   if (e.key === 'Escape') {
+    if (s.ui.rectificationFormOpen) { store.setRectificationFormOpen(false); return }
     if (s.ui.adminPanelOpen) { store.setAdminPanelOpen(false); return }
     if (s.ui.importModalOpen) { store.setImportModalOpen(false); return }
     if (s.ui.sidebarOpen) { store.selectItem(null); return }
