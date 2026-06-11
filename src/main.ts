@@ -105,6 +105,16 @@ function render(): void {
 
   bindEvents()
   setupKeyboardShortcuts()
+
+  if (s.ui.currentView === 'list' && s.ui.highlightedItemId) {
+    requestAnimationFrame(() => {
+      const row = document.querySelector(`[data-row-id="${s.ui.highlightedItemId}"]`) as HTMLElement | null
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+      setTimeout(() => store.highlightItem(null), 2500)
+    })
+  }
 }
 
 function getActiveFilterCount(s: AppState): number {
@@ -1590,6 +1600,8 @@ function bindEvents(): void {
     ;(form.querySelector('[data-manual="price"]') as HTMLInputElement).value = ''
     ;(form.querySelector('[data-manual="responsible"]') as HTMLInputElement).value = ''
   })
+
+  bindDashboardEvents()
 }
 
 function handleChipToggle(type: string, value: string): void {
@@ -1701,8 +1713,6 @@ function toggleColumnPanel(): void {
     }
     setTimeout(() => document.addEventListener('mousedown', onClickOutside), 0)
   }, 0)
-
-  bindDashboardEvents()
 }
 
 function handleImportFile(file: File): void {

@@ -1227,7 +1227,8 @@ export function drillDownByStatus(status: AuditStatus | 'unchecked'): AppState {
     s.filters.alertTypes = []
     s.filters.searchText = ''
     s.ui.currentView = 'list'
-    s.ui.highlightedItemId = null
+    const filtered = getFilteredChecklistInternal(s)
+    s.ui.highlightedItemId = filtered.length > 0 ? filtered[0].id : null
   })
 }
 
@@ -1240,7 +1241,8 @@ export function drillDownByAlertType(alertType: AlertType): AppState {
     s.filters.statuses = []
     s.filters.searchText = ''
     s.ui.currentView = 'list'
-    s.ui.highlightedItemId = null
+    const filtered = getFilteredChecklistInternal(s)
+    s.ui.highlightedItemId = filtered.length > 0 ? filtered[0].id : null
   })
 }
 
@@ -1257,7 +1259,8 @@ export function drillDownByResponsible(responsible: string): AppState {
     s.filters.alertTypes = []
     s.filters.searchText = ''
     s.ui.currentView = 'list'
-    s.ui.highlightedItemId = null
+    const filtered = getFilteredChecklistInternal(s)
+    s.ui.highlightedItemId = filtered.length > 0 ? filtered[0].id : null
   })
 }
 
