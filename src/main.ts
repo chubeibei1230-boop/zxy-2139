@@ -483,6 +483,10 @@ function renderDetailSidebar(s: AppState, readOnly: boolean): string {
   const itemAlerts = s.alerts.filter(a => a.itemId === item.id)
   const statusColor = item.status ? STATUS_COLORS[item.status] : 'var(--text-muted)'
 
+  const lockedInfo = store.isItemLockedInCurrentView(item.id)
+  const effectiveReadOnly = readOnly || lockedInfo.locked
+  const readOnlyReason = lockedInfo.locked ? lockedInfo.reason : (readOnly ? '审计员只读模式' : '')
+
   function renderStatusOption(value: AuditStatus | '__clear__', label: string, color: string): string {
     const isSelected = (value === '__clear__' ? merged.status === null : merged.status === value)
     const showColor = value === '__clear__' ? 'var(--text-muted)' : color
@@ -495,7 +499,7 @@ function renderDetailSidebar(s: AppState, readOnly: boolean): string {
     `
   }
 
-  const disabled = readOnly ? 'disabled' : ''
+  const disabled = effectiveReadOnly ? 'disabled' : ''
 
   return `
     <div class="sidebar-overlay ${open ? 'open' : ''}" id="sidebarOverlay"></div>
@@ -517,15 +521,21 @@ function renderDetailSidebar(s: AppState, readOnly: boolean): string {
         <button class="close-btn" id="closeSidebarBtn" title="关闭">×</button>
       </div>
       <div class="sidebar-body">
+        ${effectiveReadOnly && readOnlyReason ? `
+          <div style="background:#fef3c7;padding:10px 14px;border-radius:8px;margin-bottom:16px;display:flex;align-items:center;gap:8px;color:#92400e;font-size:13px">
+            <span style="font-size:18px">🔒</span>
+            <span>${esc(readOnlyReason)}</span>
+          </div>
+        ` : ''}
         <div class="form-section">
           <div class="section-title">📝 校对状态</div>
-          <div class="status-picker" style="${readOnly ? 'opacity:0.8;pointer-events:none' : ''}">
+          <div class="status-picker" style="${effectiveReadOnly ? 'opacity:0.8;pointer-events:none' : ''}">
             ${renderStatusOption('normal', '✓ 正常', STATUS_COLORS.normal)}
             ${renderStatusOption('need_supply', '+ 需补充', STATUS_COLORS.need_supply)}
             ${renderStatusOption('need_review', '! 需复核', STATUS_COLORS.need_review)}
             ${renderStatusOption('pending', '⏸ 暂缓处理', STATUS_COLORS.pending)}
           </div>
-          <div style="margin-top:10px;display:flex;justify-content:center;${readOnly ? 'opacity:0.6' : ''}">
+          <div style="margin-top:10px;display:flex;justify-content:center;${effectiveReadOnly ? 'opacity:0.6' : ''}">
             <button class="btn btn-sm" data-status-value="__clear__" ${disabled}>
               清除状态（未校对）
             </button>
@@ -618,7 +628,7 @@ function renderDetailSidebar(s: AppState, readOnly: boolean): string {
             const rectTasks = store.getRectificationsForItem(item.id)
             const activeRects = rectTasks.filter(t => t.status !== 'closed')
             const closedRects = rectTasks.filter(t => t.status === 'closed')
-            const canCreateRect = canEdit(s.currentRole) && (item.status === 'need_supply' || item.status === 'need_review' || item.status === 'pending')
+            const canCreateRect = !effectiveReadOnly && canEdit(s.currentRole) && (item.status === 'need_supply' || item.status === 'need_review' || item.status === 'pending')
             return `
               ${canCreateRect ? `
                 <button class="btn btn-sm" style="margin-bottom:10px;width:100%" id="createRectBtn" data-rect-item-id="${item.id}">➕ 发起整改</button>
@@ -656,11 +666,11 @@ function renderDetailSidebar(s: AppState, readOnly: boolean): string {
         </div>
       </div>
       <div class="sidebar-footer">
-        ${!readOnly ? `
+        ${!effectiveReadOnly ? `
           <button class="btn btn-danger btn-sm" id="deleteItemBtn">🗑 删除</button>
-        ` : `<div class="spacer"></div><span class="text-muted" style="font-size:12px">审计员只读模式</span><div class="spacer"></div>`}
+        ` : `<div class="spacer"></div><span class="text-muted" style="font-size:12px">🔒 ${esc(readOnlyReason || '只读模式')}</span><div class="spacer"></div>`}
         <div class="spacer"></div>
-        ${!readOnly ? `
+        ${!effectiveReadOnly ? `
           <button class="btn" id="resetDraftBtn">放弃修改</button>
           <button class="btn btn-primary" id="saveItemBtn">💾 保存更改</button>
         ` : ''}
@@ -1465,6 +1475,11 @@ function bindEvents(): void {
   document.getElementById('saveItemBtn')?.addEventListener('click', () => {
     const id = store.getState().ui.selectedItemId
     if (!id || !editingDraft[id]) return
+    const locked = store.isItemLockedInCurrentView(id)
+    if (locked.locked) {
+      alert('🔒 无法保存：\n' + (locked.reason || '数据已锁定无法编辑'))
+      return
+    }
     store.updateChecklistItem(id, editingDraft[id])
     delete editingDraft[id]
   })
@@ -1478,6 +1493,11 @@ function bindEvents(): void {
   document.getElementById('deleteItemBtn')?.addEventListener('click', () => {
     const id = store.getState().ui.selectedItemId
     if (!id) return
+    const locked = store.isItemLockedInCurrentView(id)
+    if (locked.locked) {
+      alert('🔒 无法删除：\n' + (locked.reason || '数据已锁定无法删除'))
+      return
+    }
     if (!confirm('确定要删除这条记录吗？')) return
     store.deleteChecklistItem(id)
     delete editingDraft[id]
@@ -3211,6 +3231,12 @@ function bindBatchEvents(): void {
   document.getElementById('generateBatchReviewBtn')?.addEventListener('click', () => {
     const batchId = store.getState().ui.selectedBatchId
     if (!batchId) return
+    const check = store.canGenerateReview(batchId)
+    if (!check.ok) {
+      alert('⚠️ ' + (check.reason || '无法生成复盘结论'))
+      return
+    }
+    if (!confirm('确定要基于当前批次数据一键生成复盘结论吗？')) return
     store.generateBatchReviewResult(batchId)
     store.setBatchReviewPanelOpen(false)
   })
@@ -3288,13 +3314,15 @@ function bindBatchEvents(): void {
   document.getElementById('closeThisBatchBtn')?.addEventListener('click', () => {
     const batchId = store.getState().ui.selectedBatchId
     if (!batchId) return
+    const check = store.canCloseBatch(batchId)
+    if (!check.ok) {
+      alert('⛔ 无法关闭归档：\n' + (check.reason || '批次状态不允许关闭'))
+      return
+    }
     const stats = store.getBatchStats(batchId)
     let msg = '确定要关闭归档此巡检批次吗？\n关闭后批次内容将只读但仍可查看复盘摘要。'
     if (stats.unclosedRectifications > 0) {
       msg += `\n\n⚠️ 注意：当前还有 ${stats.unclosedRectifications} 项整改任务尚未闭环。`
-    }
-    if (stats.uncheckedCount > 0) {
-      msg += `\n⚠️ 注意：当前还有 ${stats.uncheckedCount} 项清单未完成校对。`
     }
     if (confirm(msg)) {
       store.closeBatch(batchId)

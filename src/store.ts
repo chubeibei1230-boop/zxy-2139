@@ -1438,6 +1438,29 @@ export function createBatch(
   })
 }
 
+export function canCloseBatch(id: string): { ok: boolean; reason?: string } {
+  const s = loadState()
+  const batch = s.batches.find(b => b.id === id)
+  if (!batch) return { ok: false, reason: '批次不存在' }
+  if (batch.status !== 'active') return { ok: false, reason: '批次状态不允许关闭' }
+  const stats = getBatchStats(id)
+  if (stats.uncheckedCount > 0) {
+    return { ok: false, reason: `还有 ${stats.uncheckedCount} 项未完成核对，请完成所有核对后再关闭归档` }
+  }
+  return { ok: true }
+}
+
+export function canGenerateReview(id: string): { ok: boolean; reason?: string } {
+  const s = loadState()
+  const batch = s.batches.find(b => b.id === id)
+  if (!batch) return { ok: false, reason: '批次不存在' }
+  const stats = getBatchStats(id)
+  if (stats.uncheckedCount > 0) {
+    return { ok: false, reason: `还有 ${stats.uncheckedCount} 项未完成核对，请完成所有核对后再生成复盘结论` }
+  }
+  return { ok: true }
+}
+
 export function closeBatch(id: string): AppState {
   return setState(s => {
     const batch = s.batches.find(b => b.id === id)
@@ -1687,6 +1710,18 @@ export function getBatch(batchId: string): InspectionBatch | undefined {
   return s.batches.find(b => b.id === batchId)
 }
 
+export function isItemLockedInCurrentView(itemId: string): { locked: boolean; reason?: string } {
+  const s = loadState()
+  const currentBatchId = s.ui.selectedBatchId
+  if (currentBatchId && s.ui.currentView === 'batchDetail') {
+    const currentBatch = s.batches.find(b => b.id === currentBatchId)
+    if (currentBatch && currentBatch.status === 'closed' && currentBatch.checklistItemIds.includes(itemId)) {
+      return { locked: true, reason: '此清单项属于已归档的巡检批次，内容已锁定无法编辑。' }
+    }
+  }
+  return { locked: false }
+}
+
 export function getBatchAlerts(batchId: string): AlertRecord[] {
   const s = loadState()
   const batch = s.batches.find(b => b.id === batchId)
@@ -1704,9 +1739,14 @@ export function getBatchRectifications(batchId: string): RectificationTask[] {
 }
 
 function isItemInClosedBatch(s: AppState, itemId: string): boolean {
-  return s.batches.some(b => 
-    b.status === 'closed' && b.checklistItemIds.includes(itemId)
-  )
+  const currentBatchId = s.ui.selectedBatchId
+  if (currentBatchId) {
+    const currentBatch = s.batches.find(b => b.id === currentBatchId)
+    if (currentBatch && currentBatch.status === 'closed') {
+      return currentBatch.checklistItemIds.includes(itemId)
+    }
+  }
+  return false
 }
 
 export function goBackToBatches(): AppState {
