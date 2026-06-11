@@ -111,6 +111,25 @@ export interface ColumnConfig {
   alerts: boolean
 }
 
+export type DashboardView = 'list' | 'dashboard'
+
+export interface DashboardStats {
+  totalItems: number
+  checkedCount: number
+  uncheckedCount: number
+  normalCount: number
+  needSupplyCount: number
+  needReviewCount: number
+  pendingCount: number
+  checkProgress: number
+  totalAlerts: number
+  alertTypeDistribution: Record<AlertType, number>
+  responsibleIssueRanking: Array<{ name: string; issueCount: number; totalCount: number }>
+  rectificationStatusDistribution: Record<RectificationStatus, number>
+  overdueRectificationCount: number
+  totalRectifications: number
+}
+
 export interface UiState {
   sidebarOpen: boolean
   selectedItemId: string | null
@@ -125,6 +144,9 @@ export interface UiState {
   selectedRectificationId: string | null
   rectificationFormOpen: boolean
   rectificationFormItemId: string | null
+  currentView: DashboardView
+  summaryModalOpen: boolean
+  summaryText: string
 }
 
 export interface AppState {

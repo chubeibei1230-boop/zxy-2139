@@ -90,7 +90,7 @@ function render(): void {
       ${renderToolbar(s, configReadOnly)}
       ${renderFilterBar(s)}
       <div class="main-content">
-        ${renderListArea(s, readOnly)}
+        ${s.ui.currentView === 'dashboard' ? renderDashboard(s) : renderListArea(s, readOnly)}
         ${renderAlertPanel(s)}
       </div>
       ${renderDetailSidebar(s, readOnly)}
@@ -99,6 +99,7 @@ function render(): void {
       ${renderAdminModal(s, configReadOnly)}
       ${renderImportModal(s, readOnly)}
       ${renderColumnPopover(s)}
+      ${renderSummaryModal(s)}
     </div>
   `
 
@@ -124,14 +125,24 @@ function renderToolbar(s: AppState, configReadOnly: boolean): string {
       </div>
       <div class="toolbar-divider"></div>
       <div class="toolbar-center">
-        <div class="search-box">
-          <span class="search-icon">🔍</span>
-          <input type="text" id="searchInput" placeholder="搜索标题、位置、备注…" value="${esc(s.filters.searchText)}" />
+        <div class="view-switcher">
+          <button class="view-switch-btn ${s.ui.currentView === 'list' ? 'active' : ''}" data-view="list">📋 清单</button>
+          <button class="view-switch-btn ${s.ui.currentView === 'dashboard' ? 'active' : ''}" data-view="dashboard">📊 看板</button>
         </div>
-        <button class="filter-btn ${activeFilters > 0 ? 'active' : ''}" id="toggleFilterBtn">
-          <span>⚙ 筛选</span>
-          ${activeFilters > 0 ? `<span class="filter-badge">${activeFilters}</span>` : ''}
-        </button>
+        ${s.ui.currentView === 'dashboard' ? `
+          <button class="btn btn-primary btn-sm" id="generateSummaryBtn" title="一键生成复盘摘要">
+            📝 生成复盘摘要
+          </button>
+        ` : `
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="searchInput" placeholder="搜索标题、位置、备注…" value="${esc(s.filters.searchText)}" />
+          </div>
+          <button class="filter-btn ${activeFilters > 0 ? 'active' : ''}" id="toggleFilterBtn">
+            <span>⚙ 筛选</span>
+            ${activeFilters > 0 ? `<span class="filter-badge">${activeFilters}</span>` : ''}
+          </button>
+        `}
         <button class="filter-btn ${s.ui.alertPanelOpen ? 'active' : ''}" id="toggleAlertBtn" title="告警面板">
           <span>🔔 告警</span>
           ${s.alerts.length > 0 ? `<span class="filter-badge" style="background:${ALERT_COLORS.price_tag_missing}">${s.alerts.length}</span>` : ''}
@@ -1690,6 +1701,8 @@ function toggleColumnPanel(): void {
     }
     setTimeout(() => document.addEventListener('mousedown', onClickOutside), 0)
   }, 0)
+
+  bindDashboardEvents()
 }
 
 function handleImportFile(file: File): void {
@@ -1835,6 +1848,359 @@ function handleKeydown(e: KeyboardEvent): void {
     if (s.ui.importModalOpen) { store.setImportModalOpen(false); return }
     if (s.ui.sidebarOpen) { store.selectItem(null); return }
   }
+}
+
+// ============ 复盘看板 ============
+function renderDashboard(s: AppState): string {
+  const stats = store.generateDashboardStats()
+  const readOnly = !canEdit(s.currentRole)
+
+  return `
+    <div class="dashboard-container">
+      <div class="dashboard-header">
+        <div class="dashboard-title">
+          <h2>📊 复盘看板</h2>
+          <p class="dashboard-subtitle">当前筛选范围内的校对执行概况</p>
+        </div>
+        <div class="dashboard-actions">
+          ${!readOnly ? `
+            <button class="btn btn-primary" id="dashboardSummaryBtn">
+              📝 一键生成复盘摘要
+            </button>
+          ` : ''}
+        </div>
+      </div>
+
+      <div class="dashboard-grid">
+        ${renderProgressCard(stats)}
+        ${renderStatusCards(stats)}
+        ${renderAlertTypeCard(stats)}
+        ${renderResponsibleRankingCard(stats)}
+        ${renderRectificationCard(stats)}
+      </div>
+    </div>
+  `
+}
+
+function renderProgressCard(stats: ReturnType<typeof store.generateDashboardStats>): string {
+  return `
+    <div class="dash-card dash-card-wide dash-card-progress">
+      <div class="dash-card-header">
+        <span class="dash-card-icon">📈</span>
+        <span class="dash-card-title">校对进度</span>
+      </div>
+      <div class="dash-progress-main">
+        <div class="dash-progress-circle" style="--progress: ${stats.checkProgress}%">
+          <div class="dash-progress-circle-inner">
+            <span class="dash-progress-percent">${stats.checkProgress}%</span>
+            <span class="dash-progress-label">完成率</span>
+          </div>
+        </div>
+        <div class="dash-progress-stats">
+          <div class="dash-progress-item">
+            <span class="dash-progress-num">${stats.totalItems}</span>
+            <span class="dash-progress-text">总项数</span>
+          </div>
+          <div class="dash-progress-item">
+            <span class="dash-progress-num" style="color:var(--success)">${stats.checkedCount}</span>
+            <span class="dash-progress-text">已校对</span>
+          </div>
+          <div class="dash-progress-item">
+            <span class="dash-progress-num" style="color:var(--text-muted)">${stats.uncheckedCount}</span>
+            <span class="dash-progress-text">未校对</span>
+          </div>
+        </div>
+      </div>
+      <div class="dash-card-footer">
+        <span class="dash-card-hint">点击查看未校对项 →</span>
+        <button class="dash-card-link" data-drill="unchecked">去核对</button>
+      </div>
+    </div>
+  `
+}
+
+function renderStatusCards(stats: ReturnType<typeof store.generateDashboardStats>): string {
+  const statusItems = [
+    { key: 'normal', label: '正常', count: stats.normalCount, color: STATUS_COLORS.normal, icon: '✅' },
+    { key: 'need_supply', label: '需补充', count: stats.needSupplyCount, color: STATUS_COLORS.need_supply, icon: '📦' },
+    { key: 'need_review', label: '需复核', count: stats.needReviewCount, color: STATUS_COLORS.need_review, icon: '⚠️' },
+    { key: 'pending', label: '暂缓处理', count: stats.pendingCount, color: STATUS_COLORS.pending, icon: '⏸️' }
+  ]
+
+  return `
+    <div class="dash-card dash-card-status">
+      <div class="dash-card-header">
+        <span class="dash-card-icon">📋</span>
+        <span class="dash-card-title">校对状态分布</span>
+      </div>
+      <div class="dash-status-grid">
+        ${statusItems.map(item => `
+          <div class="dash-status-item" data-drill-status="${item.key}" style="cursor:pointer">
+            <div class="dash-status-icon" style="background:${item.color}20;color:${item.color}">
+              ${item.icon}
+            </div>
+            <div class="dash-status-num" style="color:${item.color}">${item.count}</div>
+            <div class="dash-status-label">${item.label}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `
+}
+
+function renderAlertTypeCard(stats: ReturnType<typeof store.generateDashboardStats>): string {
+  const alertTypes = Object.entries(stats.alertTypeDistribution)
+    .map(([type, count]) => ({
+      type,
+      count,
+      label: ALERT_LABELS[type as AlertType],
+      color: ALERT_COLORS[type as AlertType]
+    }))
+    .sort((a, b) => b.count - a.count)
+
+  const maxCount = Math.max(...alertTypes.map(a => a.count), 1)
+
+  return `
+    <div class="dash-card">
+      <div class="dash-card-header">
+        <span class="dash-card-icon">🔔</span>
+        <span class="dash-card-title">告警类型分布</span>
+        <span class="dash-card-badge" style="background:var(--danger)">${stats.totalAlerts}</span>
+      </div>
+      <div class="dash-alert-list">
+        ${alertTypes.length === 0 ? `
+          <div class="empty-state" style="padding:20px">
+            <div class="empty-state-icon">✅</div>
+            <div>暂无告警</div>
+          </div>
+        ` : alertTypes.map(item => `
+          <div class="dash-alert-item" data-drill-alert="${item.type}" style="cursor:pointer">
+            <div class="dash-alert-info">
+              <span class="dash-alert-dot" style="background:${item.color}"></span>
+              <span class="dash-alert-label">${item.label}</span>
+            </div>
+            <div class="dash-alert-bar-wrap">
+              <div class="dash-alert-bar" style="width:${(item.count / maxCount) * 100}%;background:${item.color}"></div>
+            </div>
+            <span class="dash-alert-count">${item.count}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `
+}
+
+function renderResponsibleRankingCard(stats: ReturnType<typeof store.generateDashboardStats>): string {
+  const topList = stats.responsibleIssueRanking.slice(0, 6)
+  const maxIssue = Math.max(...topList.map(r => r.issueCount), 1)
+
+  return `
+    <div class="dash-card">
+      <div class="dash-card-header">
+        <span class="dash-card-icon">👥</span>
+        <span class="dash-card-title">责任人问题排行</span>
+      </div>
+      <div class="dash-ranking-list">
+        ${topList.length === 0 ? `
+          <div class="empty-state" style="padding:20px">
+            <div class="empty-state-icon">👤</div>
+            <div>暂无责任人数据</div>
+          </div>
+        ` : topList.map((item, idx) => `
+          <div class="dash-ranking-item" data-drill-responsible="${esc(item.name)}" style="cursor:pointer">
+            <div class="dash-ranking-rank ${idx < 3 ? 'top' : ''}">${idx + 1}</div>
+            <div class="dash-ranking-name">
+              <span class="dash-ranking-title">${esc(item.name)}</span>
+              <span class="dash-ranking-sub">共 ${item.totalCount} 项</span>
+            </div>
+            <div class="dash-ranking-bar-wrap">
+              <div class="dash-ranking-bar" style="width:${(item.issueCount / maxIssue) * 100}%"></div>
+            </div>
+            <span class="dash-ranking-count">${item.issueCount}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `
+}
+
+function renderRectificationCard(stats: ReturnType<typeof store.generateDashboardStats>): string {
+  const rectItems = [
+    { key: 'pending', label: '待处理', count: stats.rectificationStatusDistribution.pending, color: RECTIFICATION_STATUS_COLORS.pending },
+    { key: 'in_progress', label: '处理中', count: stats.rectificationStatusDistribution.in_progress, color: RECTIFICATION_STATUS_COLORS.in_progress },
+    { key: 'completed', label: '已完成', count: stats.rectificationStatusDistribution.completed, color: RECTIFICATION_STATUS_COLORS.completed },
+    { key: 'closed', label: '已关闭', count: stats.rectificationStatusDistribution.closed, color: RECTIFICATION_STATUS_COLORS.closed }
+  ]
+
+  return `
+    <div class="dash-card dash-card-wide">
+      <div class="dash-card-header">
+        <span class="dash-card-icon">🔄</span>
+        <span class="dash-card-title">整改任务状态</span>
+        <span class="dash-card-badge" style="background:#8b5cf6">${stats.totalRectifications}</span>
+      </div>
+      <div class="dash-rect-grid">
+        ${rectItems.map(item => `
+          <div class="dash-rect-item" data-drill-rect="${item.key}" style="cursor:pointer">
+            <div class="dash-rect-num" style="color:${item.color}">${item.count}</div>
+            <div class="dash-rect-label">${item.label}</div>
+            <div class="dash-rect-bar" style="background:${item.color}20">
+              <div class="dash-rect-bar-fill" style="width:${stats.totalRectifications > 0 ? (item.count / stats.totalRectifications) * 100 : 0}%;background:${item.color}"></div>
+            </div>
+          </div>
+        `).join('')}
+        <div class="dash-rect-item dash-rect-overdue ${stats.overdueRectificationCount > 0 ? 'has-overdue' : ''}" data-drill-rect="overdue" style="cursor:pointer">
+          <div class="dash-rect-num" style="color:var(--danger)">${stats.overdueRectificationCount}</div>
+          <div class="dash-rect-label">已逾期</div>
+          <div class="dash-rect-bar" style="background:#fee2e2">
+            <div class="dash-rect-bar-fill" style="width:${stats.totalRectifications > 0 ? (stats.overdueRectificationCount / stats.totalRectifications) * 100 : 0}%;background:var(--danger)"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function renderSummaryModal(s: AppState): string {
+  if (!s.ui.summaryModalOpen) {
+    return `<div class="modal-overlay" id="summaryOverlay"></div>`
+  }
+
+  const summary = store.generateReviewSummary()
+  const readOnly = !canEdit(s.currentRole)
+
+  return `
+    <div class="modal-overlay open" id="summaryOverlay">
+      <div class="modal" style="max-width:640px">
+        <div class="modal-header">
+          <div class="modal-title">📝 复盘摘要</div>
+          <button class="close-btn" id="closeSummaryBtn">×</button>
+        </div>
+        <div class="modal-body">
+          <div style="margin-bottom:12px">
+            <span class="text-muted" style="font-size:12px">
+              基于当前筛选范围自动生成，可直接复制到日报
+            </span>
+          </div>
+          <div class="summary-content" id="summaryContent">${esc(summary).replace(/\n/g, '<br>')}</div>
+        </div>
+        <div class="modal-footer">
+          <span class="text-muted" style="font-size:12px;margin-right:auto">
+            ${readOnly ? '审计员只读模式' : ''}
+          </span>
+          <button class="btn" id="closeSummaryBtn2">关闭</button>
+          <button class="btn btn-primary" id="copySummaryBtn">📋 复制全文</button>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function bindDashboardEvents(): void {
+  document.querySelectorAll('[data-view]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const view = (btn as HTMLElement).dataset.view as 'list' | 'dashboard'
+      store.setCurrentView(view)
+    })
+  })
+
+  const generateSummaryBtn = document.getElementById('generateSummaryBtn')
+  if (generateSummaryBtn) {
+    generateSummaryBtn.addEventListener('click', () => {
+      store.setSummaryModalOpen(true)
+    })
+  }
+
+  const dashboardSummaryBtn = document.getElementById('dashboardSummaryBtn')
+  if (dashboardSummaryBtn) {
+    dashboardSummaryBtn.addEventListener('click', () => {
+      store.setSummaryModalOpen(true)
+    })
+  }
+
+  const closeSummaryBtn = document.getElementById('closeSummaryBtn')
+  if (closeSummaryBtn) {
+    closeSummaryBtn.addEventListener('click', () => {
+      store.setSummaryModalOpen(false)
+    })
+  }
+
+  const closeSummaryBtn2 = document.getElementById('closeSummaryBtn2')
+  if (closeSummaryBtn2) {
+    closeSummaryBtn2.addEventListener('click', () => {
+      store.setSummaryModalOpen(false)
+    })
+  }
+
+  const summaryOverlay = document.getElementById('summaryOverlay')
+  if (summaryOverlay) {
+    summaryOverlay.addEventListener('click', (e) => {
+      if (e.target === summaryOverlay) {
+        store.setSummaryModalOpen(false)
+      }
+    })
+  }
+
+  const copySummaryBtn = document.getElementById('copySummaryBtn')
+  if (copySummaryBtn) {
+    copySummaryBtn.addEventListener('click', async () => {
+      const summary = store.generateReviewSummary()
+      try {
+        await navigator.clipboard.writeText(summary)
+        const originalText = copySummaryBtn.textContent
+        copySummaryBtn.textContent = '✅ 已复制'
+        setTimeout(() => {
+          copySummaryBtn.textContent = originalText
+        }, 2000)
+      } catch {
+        const textarea = document.createElement('textarea')
+        textarea.value = summary
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+        const originalText = copySummaryBtn.textContent
+        copySummaryBtn.textContent = '✅ 已复制'
+        setTimeout(() => {
+          copySummaryBtn.textContent = originalText
+        }, 2000)
+      }
+    })
+  }
+
+  document.querySelectorAll('[data-drill="unchecked"]').forEach(el => {
+    el.addEventListener('click', () => {
+      store.drillDownByStatus('unchecked')
+    })
+  })
+
+  document.querySelectorAll('[data-drill-status]').forEach(el => {
+    el.addEventListener('click', () => {
+      const status = (el as HTMLElement).dataset.drillStatus as AuditStatus
+      store.drillDownByStatus(status)
+    })
+  })
+
+  document.querySelectorAll('[data-drill-alert]').forEach(el => {
+    el.addEventListener('click', () => {
+      const alertType = (el as HTMLElement).dataset.drillAlert as AlertType
+      store.drillDownByAlertType(alertType)
+    })
+  })
+
+  document.querySelectorAll('[data-drill-responsible]').forEach(el => {
+    el.addEventListener('click', () => {
+      const responsible = (el as HTMLElement).dataset.drillResponsible || ''
+      store.drillDownByResponsible(responsible)
+    })
+  })
+
+  document.querySelectorAll('[data-drill-rect]').forEach(el => {
+    el.addEventListener('click', () => {
+      const status = (el as HTMLElement).dataset.drillRect as RectificationStatus | 'overdue'
+      store.drillDownByRectificationStatus(status)
+    })
+  })
 }
 
 // ============ 入口 ============

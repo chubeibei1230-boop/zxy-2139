@@ -135,7 +135,10 @@ function createInitialState(): AppState {
       rectificationFilterStatus: 'all',
       selectedRectificationId: null,
       rectificationFormOpen: false,
-      rectificationFormItemId: null
+      rectificationFormItemId: null,
+      currentView: 'list',
+      summaryModalOpen: false,
+      summaryText: ''
     },
     lastSavedAt: Date.now()
   }
@@ -305,7 +308,10 @@ export function loadState(): AppState {
           rectificationFilterStatus: 'all',
           selectedRectificationId: null,
           rectificationFormOpen: false,
-          rectificationFormItemId: null
+          rectificationFormItemId: null,
+          currentView: 'list',
+          summaryModalOpen: false,
+          summaryText: ''
         }
       }
       if (state.ui.rectificationPanelOpen === undefined) {
@@ -314,6 +320,11 @@ export function loadState(): AppState {
         state.ui.selectedRectificationId = null
         state.ui.rectificationFormOpen = false
         state.ui.rectificationFormItemId = null
+      }
+      if (state.ui.currentView === undefined) {
+        state.ui.currentView = 'list'
+        state.ui.summaryModalOpen = false
+        state.ui.summaryText = ''
       }
       return state
     }
@@ -998,5 +1009,266 @@ export function locateRectificationFromAlert(alertId: string): AppState {
     }
     s.ui.rectificationPanelOpen = true
     s.ui.selectedRectificationId = task.id
+  })
+}
+
+export function setCurrentView(view: 'list' | 'dashboard'): AppState {
+  return setState(s => { s.ui.currentView = view })
+}
+
+export function setSummaryModalOpen(open: boolean): AppState {
+  return setState(s => { s.ui.summaryModalOpen = open })
+}
+
+export function generateDashboardStats(): {
+  totalItems: number
+  checkedCount: number
+  uncheckedCount: number
+  normalCount: number
+  needSupplyCount: number
+  needReviewCount: number
+  pendingCount: number
+  checkProgress: number
+  totalAlerts: number
+  alertTypeDistribution: Record<string, number>
+  responsibleIssueRanking: Array<{ name: string; issueCount: number; totalCount: number }>
+  rectificationStatusDistribution: Record<string, number>
+  overdueRectificationCount: number
+  totalRectifications: number
+} {
+  const s = loadState()
+  const filtered = getFilteredChecklist()
+  const visibleItemIds = new Set(filtered.map(i => i.id))
+  const visibleAlerts = s.alerts.filter(a => visibleItemIds.has(a.itemId))
+  const visibleRectifications = s.rectifications.filter(r => visibleItemIds.has(r.itemId))
+
+  const totalItems = filtered.length
+  const checkedCount = filtered.filter(i => i.status !== null).length
+  const uncheckedCount = totalItems - checkedCount
+  const normalCount = filtered.filter(i => i.status === 'normal').length
+  const needSupplyCount = filtered.filter(i => i.status === 'need_supply').length
+  const needReviewCount = filtered.filter(i => i.status === 'need_review').length
+  const pendingCount = filtered.filter(i => i.status === 'pending').length
+  const checkProgress = totalItems > 0 ? Math.round((checkedCount / totalItems) * 100) : 0
+
+  const alertTypeDistribution: Record<string, number> = {
+    price_tag_missing: 0,
+    theme_mismatch: 0,
+    no_responsible: 0,
+    promo_tag_missing: 0,
+    shelf_arrangement_wrong: 0,
+    remark_pending: 0
+  }
+  visibleAlerts.forEach(a => {
+    if (alertTypeDistribution[a.type] !== undefined) {
+      alertTypeDistribution[a.type]++
+    }
+  })
+
+  const responsibleMap = new Map<string, { issueCount: number; totalCount: number }>()
+  filtered.forEach(item => {
+    const name = item.responsible || '未指定'
+    if (!responsibleMap.has(name)) {
+      responsibleMap.set(name, { issueCount: 0, totalCount: 0 })
+    }
+    const entry = responsibleMap.get(name)!
+    entry.totalCount++
+    if (item.status === 'need_supply' || item.status === 'need_review' || item.status === 'pending') {
+      entry.issueCount++
+    }
+  })
+  const responsibleIssueRanking = Array.from(responsibleMap.entries())
+    .map(([name, data]) => ({ name, ...data }))
+    .sort((a, b) => b.issueCount - a.issueCount || b.totalCount - a.totalCount)
+
+  const rectificationStatusDistribution: Record<string, number> = {
+    pending: 0,
+    in_progress: 0,
+    completed: 0,
+    closed: 0
+  }
+  visibleRectifications.forEach(r => {
+    if (rectificationStatusDistribution[r.status] !== undefined) {
+      rectificationStatusDistribution[r.status]++
+    }
+  })
+
+  const now = Date.now()
+  const overdueRectificationCount = visibleRectifications.filter(
+    r => r.planCompleteAt && r.planCompleteAt < now && r.status !== 'completed' && r.status !== 'closed'
+  ).length
+
+  return {
+    totalItems,
+    checkedCount,
+    uncheckedCount,
+    normalCount,
+    needSupplyCount,
+    needReviewCount,
+    pendingCount,
+    checkProgress,
+    totalAlerts: visibleAlerts.length,
+    alertTypeDistribution,
+    responsibleIssueRanking,
+    rectificationStatusDistribution,
+    overdueRectificationCount,
+    totalRectifications: visibleRectifications.length
+  }
+}
+
+export function generateReviewSummary(): string {
+  const s = loadState()
+  const stats = generateDashboardStats()
+  const areaMap = new Map(s.areas.map(a => [a.id, a.name]))
+  const themeMap = new Map(s.themes.map(t => [t.id, t.name]))
+
+  const now = new Date()
+  const dateStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`
+
+  const lines: string[] = []
+  lines.push(`【门店陈列核对复盘摘要 - ${dateStr}】`)
+  lines.push('')
+
+  lines.push('一、完成概况')
+  lines.push(`  · 清单总数：${stats.totalItems} 项`)
+  lines.push(`  · 已校对：${stats.checkedCount} 项（${stats.checkProgress}%）`)
+  lines.push(`  · 未校对：${stats.uncheckedCount} 项`)
+  lines.push(`  · 正常项：${stats.normalCount} 项`)
+  lines.push(`  · 问题项：${stats.needSupplyCount + stats.needReviewCount + stats.pendingCount} 项`)
+  lines.push('')
+
+  lines.push('二、问题分布')
+  lines.push(`  · 需补充：${stats.needSupplyCount} 项`)
+  lines.push(`  · 需复核：${stats.needReviewCount} 项`)
+  lines.push(`  · 暂缓处理：${stats.pendingCount} 项`)
+  lines.push('')
+
+  lines.push('三、告警类型分布')
+  const alertTypes = Object.entries(stats.alertTypeDistribution)
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1])
+  const alertLabels: Record<string, string> = {
+    price_tag_missing: '价格牌缺失',
+    theme_mismatch: '主题不匹配',
+    no_responsible: '责任人空缺',
+    promo_tag_missing: '促销标记缺失',
+    shelf_arrangement_wrong: '陈列位置错误',
+    remark_pending: '有整改待处理'
+  }
+  if (alertTypes.length > 0) {
+    alertTypes.forEach(([type, count]) => {
+      lines.push(`  · ${alertLabels[type] || type}：${count} 条`)
+    })
+  } else {
+    lines.push('  · 暂无告警')
+  }
+  lines.push('')
+
+  lines.push('四、待跟进责任人（问题项排行）')
+  const topResponsible = stats.responsibleIssueRanking.filter(r => r.issueCount > 0).slice(0, 5)
+  if (topResponsible.length > 0) {
+    topResponsible.forEach((r, idx) => {
+      lines.push(`  ${idx + 1}. ${r.name}：${r.issueCount} 项问题 / 共 ${r.totalCount} 项`)
+    })
+  } else {
+    lines.push('  · 暂无问题项责任人')
+  }
+  lines.push('')
+
+  lines.push('五、整改任务状态')
+  lines.push(`  · 整改总数：${stats.totalRectifications} 项`)
+  lines.push(`  · 待处理：${stats.rectificationStatusDistribution.pending} 项`)
+  lines.push(`  · 处理中：${stats.rectificationStatusDistribution.in_progress} 项`)
+  lines.push(`  · 已完成：${stats.rectificationStatusDistribution.completed} 项`)
+  lines.push(`  · 已关闭：${stats.rectificationStatusDistribution.closed} 项`)
+  if (stats.overdueRectificationCount > 0) {
+    lines.push(`  · ⚠️ 已逾期：${stats.overdueRectificationCount} 项`)
+  }
+  lines.push('')
+
+  lines.push('六、关键风险提示')
+  const risks: string[] = []
+  if (stats.overdueRectificationCount > 0) {
+    risks.push(`${stats.overdueRectificationCount} 项整改任务已逾期，需重点跟进`)
+  }
+  if (stats.needReviewCount > 0) {
+    risks.push(`${stats.needReviewCount} 项需复核，建议尽快安排二次核对`)
+  }
+  if (stats.alertTypeDistribution.no_responsible > 0) {
+    risks.push(`${stats.alertTypeDistribution.no_responsible} 项未指定责任人，存在管理盲区`)
+  }
+  if (stats.checkProgress < 100 && stats.totalItems > 0) {
+    risks.push(`校对进度 ${stats.checkProgress}%，尚有 ${stats.uncheckedCount} 项未完成`)
+  }
+  if (risks.length > 0) {
+    risks.forEach((risk, idx) => {
+      lines.push(`  ${idx + 1}. ${risk}`)
+    })
+  } else {
+    lines.push('  · 暂无明显风险，整体执行良好')
+  }
+  lines.push('')
+
+  lines.push('—— 以上为系统自动生成，供日报参考 ——')
+
+  return lines.join('\n')
+}
+
+export function drillDownByStatus(status: AuditStatus | 'unchecked'): AppState {
+  return setState(s => {
+    if (status === 'unchecked') {
+      s.filters.statuses = ['__unchecked__' as AuditStatus]
+    } else {
+      s.filters.statuses = [status]
+    }
+    s.filters.areaIds = []
+    s.filters.themeIds = []
+    s.filters.responsible = []
+    s.filters.alertTypes = []
+    s.filters.searchText = ''
+    s.ui.currentView = 'list'
+    s.ui.highlightedItemId = null
+  })
+}
+
+export function drillDownByAlertType(alertType: AlertType): AppState {
+  return setState(s => {
+    s.filters.alertTypes = [alertType]
+    s.filters.areaIds = []
+    s.filters.themeIds = []
+    s.filters.responsible = []
+    s.filters.statuses = []
+    s.filters.searchText = ''
+    s.ui.currentView = 'list'
+    s.ui.highlightedItemId = null
+  })
+}
+
+export function drillDownByResponsible(responsible: string): AppState {
+  return setState(s => {
+    if (responsible === '未指定') {
+      s.filters.responsible = ['__none__']
+    } else {
+      s.filters.responsible = [responsible]
+    }
+    s.filters.areaIds = []
+    s.filters.themeIds = []
+    s.filters.statuses = []
+    s.filters.alertTypes = []
+    s.filters.searchText = ''
+    s.ui.currentView = 'list'
+    s.ui.highlightedItemId = null
+  })
+}
+
+export function drillDownByRectificationStatus(status: RectificationStatus | 'overdue'): AppState {
+  return setState(s => {
+    s.ui.rectificationPanelOpen = true
+    if (status === 'overdue') {
+      s.ui.rectificationFilterStatus = 'pending'
+    } else {
+      s.ui.rectificationFilterStatus = status
+    }
+    s.ui.currentView = 'list'
   })
 }
