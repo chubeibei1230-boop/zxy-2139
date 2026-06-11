@@ -14,9 +14,11 @@ import type {
   RectificationHistoryEntry,
   InspectionBatch,
   BatchStatus,
-  BatchStats
+  BatchStats,
+  BatchReviewResult,
+  ReviewTab
 } from './types'
-import { DEFAULT_COLUMNS, DEFAULT_FILTERS, BATCH_STATUS_LABELS, STATUS_LABELS, RECTIFICATION_STATUS_LABELS, ALERT_LABELS } from './types'
+import { DEFAULT_COLUMNS, DEFAULT_FILTERS, BATCH_STATUS_LABELS, STATUS_LABELS, RECTIFICATION_STATUS_LABELS, ALERT_LABELS, CONCLUSION_LABELS } from './types'
 
 const STORAGE_KEY = 'store_display_audit_state_v1'
 
@@ -147,7 +149,9 @@ function createInitialState(): AppState {
       selectedBatchId: null,
       batchCreateModalOpen: false,
       batchSummaryModalOpen: false,
-      batchFilterStatus: 'all'
+      batchFilterStatus: 'all',
+      batchReviewPanelOpen: false,
+      batchReviewTab: 'overview'
     },
     lastSavedAt: Date.now()
   }
@@ -383,7 +387,9 @@ export function loadState(): AppState {
           selectedBatchId: null,
           batchCreateModalOpen: false,
           batchSummaryModalOpen: false,
-          batchFilterStatus: 'all'
+          batchFilterStatus: 'all',
+          batchReviewPanelOpen: false,
+          batchReviewTab: 'overview'
         }
       }
       if (state.ui.rectificationPanelOpen === undefined) {
@@ -403,6 +409,10 @@ export function loadState(): AppState {
         state.ui.batchCreateModalOpen = false
         state.ui.batchSummaryModalOpen = false
         state.ui.batchFilterStatus = 'all'
+      }
+      if (state.ui.batchReviewPanelOpen === undefined) {
+        state.ui.batchReviewPanelOpen = false
+        state.ui.batchReviewTab = 'overview'
       }
       return state
     }
@@ -1521,11 +1531,18 @@ export function getFilteredBatchChecklist(batchId: string): ChecklistItem[] {
 export function getBatchStats(batchId: string): BatchStats {
   const s = loadState()
   const batch = s.batches.find(b => b.id === batchId)
+  const alertTypeList: AlertType[] = ['price_tag_missing', 'theme_mismatch', 'no_responsible', 'promo_tag_missing', 'shelf_arrangement_wrong', 'remark_pending']
   if (!batch) {
+    const emptyAlertDist = {} as Record<AlertType, number>
+    alertTypeList.forEach(t => emptyAlertDist[t] = 0)
     return {
       totalItems: 0, checkedCount: 0, uncheckedCount: 0, normalCount: 0,
+      needSupplyCount: 0, needReviewCount: 0, pendingCount: 0,
       issueCount: 0, checkProgress: 0, totalAlerts: 0,
-      activeRectifications: 0, completedRectifications: 0, rectificationProgress: 0,
+      alertTypeDistribution: emptyAlertDist,
+      totalRectifications: 0, activeRectifications: 0, completedRectifications: 0,
+      pendingRectifications: 0, inProgressRectifications: 0, closedRectifications: 0,
+      rectificationProgress: 0, unclosedRectifications: 0, overdueRectifications: 0,
       responsibleDistribution: []
     }
   }
@@ -1537,16 +1554,34 @@ export function getBatchStats(batchId: string): BatchStats {
   const checkedCount = items.filter(i => i.status !== null).length
   const uncheckedCount = totalItems - checkedCount
   const normalCount = items.filter(i => i.status === 'normal').length
-  const issueCount = items.filter(i => i.status === 'need_supply' || i.status === 'need_review' || i.status === 'pending').length
+  const needSupplyCount = items.filter(i => i.status === 'need_supply').length
+  const needReviewCount = items.filter(i => i.status === 'need_review').length
+  const pendingCount = items.filter(i => i.status === 'pending').length
+  const issueCount = needSupplyCount + needReviewCount + pendingCount
   const checkProgress = totalItems > 0 ? Math.round((checkedCount / totalItems) * 100) : 0
 
-  const totalAlerts = s.alerts.filter(a => itemIdSet.has(a.itemId)).length
+  const batchAlerts = s.alerts.filter(a => itemIdSet.has(a.itemId))
+  const totalAlerts = batchAlerts.length
+  const alertTypeDistribution = {} as Record<AlertType, number>
+  alertTypeList.forEach(t => alertTypeDistribution[t] = 0)
+  batchAlerts.forEach(a => {
+    if (alertTypeDistribution[a.type] !== undefined) alertTypeDistribution[a.type]++
+  })
 
   const batchRectifications = s.rectifications.filter(r => itemIdSet.has(r.itemId))
-  const activeRectifications = batchRectifications.filter(r => r.status === 'pending' || r.status === 'in_progress').length
-  const completedRectifications = batchRectifications.filter(r => r.status === 'completed' || r.status === 'closed').length
-  const rectTotal = batchRectifications.length
-  const rectificationProgress = rectTotal > 0 ? Math.round((completedRectifications / rectTotal) * 100) : 0
+  const totalRectifications = batchRectifications.length
+  const pendingRectifications = batchRectifications.filter(r => r.status === 'pending').length
+  const inProgressRectifications = batchRectifications.filter(r => r.status === 'in_progress').length
+  const activeRectifications = pendingRectifications + inProgressRectifications
+  const completedRectifications = batchRectifications.filter(r => r.status === 'completed').length
+  const closedRectifications = batchRectifications.filter(r => r.status === 'closed').length
+  const rectDone = completedRectifications + closedRectifications
+  const rectificationProgress = totalRectifications > 0 ? Math.round((rectDone / totalRectifications) * 100) : 0
+  const unclosedRectifications = totalRectifications - closedRectifications
+  const now = Date.now()
+  const overdueRectifications = batchRectifications.filter(r =>
+    r.planCompleteAt && r.planCompleteAt < now && r.status !== 'completed' && r.status !== 'closed'
+  ).length
 
   const respMap = new Map<string, { count: number; issueCount: number }>()
   items.forEach(item => {
@@ -1560,12 +1595,16 @@ export function getBatchStats(batchId: string): BatchStats {
   })
   const responsibleDistribution = Array.from(respMap.entries())
     .map(([name, data]) => ({ name, ...data }))
-    .sort((a, b) => b.count - a.count)
+    .sort((a, b) => b.issueCount - a.issueCount || b.count - a.count)
 
   return {
-    totalItems, checkedCount, uncheckedCount, normalCount, issueCount,
-    checkProgress, totalAlerts, activeRectifications, completedRectifications,
-    rectificationProgress, responsibleDistribution
+    totalItems, checkedCount, uncheckedCount, normalCount,
+    needSupplyCount, needReviewCount, pendingCount, issueCount,
+    checkProgress, totalAlerts, alertTypeDistribution,
+    totalRectifications, activeRectifications, completedRectifications,
+    pendingRectifications, inProgressRectifications, closedRectifications,
+    rectificationProgress, unclosedRectifications, overdueRectifications,
+    responsibleDistribution
   }
 }
 
@@ -1674,5 +1713,174 @@ export function goBackToBatches(): AppState {
   return setState(s => {
     s.ui.selectedBatchId = null
     s.ui.currentView = 'batches'
+  })
+}
+
+export function setBatchReviewPanelOpen(open: boolean): AppState {
+  return setState(s => { s.ui.batchReviewPanelOpen = open })
+}
+
+export function setBatchReviewTab(tab: ReviewTab): AppState {
+  return setState(s => { s.ui.batchReviewTab = tab })
+}
+
+export function generateBatchReviewResult(batchId: string): AppState {
+  return setState(s => {
+    const batch = s.batches.find(b => b.id === batchId)
+    if (!batch) return
+    const stats = getBatchStats(batchId)
+
+    let conclusion: 'excellent' | 'good' | 'fair' | 'poor' = 'good'
+    const conclusionTexts: Record<'excellent' | 'good' | 'fair' | 'poor', string> = {
+      excellent: '本次巡检执行出色，所有项目核对完整，问题整改及时到位。',
+      good: '本次巡检整体执行良好，大部分项目已核对完成，问题正在有序整改。',
+      fair: '本次巡检执行一般，存在部分未核对项或较多待整改问题，需加强跟进。',
+      poor: '本次巡检执行有待改进，未核对项较多或存在严重逾期整改，需重点关注。'
+    }
+    const keyRisks: string[] = []
+
+    if (stats.checkProgress >= 95 && stats.issueCount === 0 && stats.overdueRectifications === 0 && stats.unclosedRectifications === 0) {
+      conclusion = 'excellent'
+    } else if (stats.checkProgress >= 80 && stats.overdueRectifications === 0 && stats.unclosedRectifications <= 2) {
+      conclusion = 'good'
+    } else if (stats.checkProgress >= 60) {
+      conclusion = 'fair'
+    } else {
+      conclusion = 'poor'
+    }
+
+    if (stats.uncheckedCount > 0) keyRisks.push(`尚有 ${stats.uncheckedCount} 项未完成核对`)
+    if (stats.issueCount > 0) keyRisks.push(`存在 ${stats.issueCount} 项异常项需整改`)
+    if (stats.overdueRectifications > 0) keyRisks.push(`${stats.overdueRectifications} 项整改任务已逾期`)
+    if (stats.unclosedRectifications > 0) keyRisks.push(`${stats.unclosedRectifications} 项整改尚未闭环`)
+    if (stats.alertTypeDistribution.no_responsible > 0) keyRisks.push(`${stats.alertTypeDistribution.no_responsible} 项未指定责任人`)
+
+    const reviewResult: BatchReviewResult = {
+      generatedAt: Date.now(),
+      generatedBy: s.currentUser,
+      conclusion,
+      conclusionText: conclusionTexts[conclusion],
+      keyRisks
+    }
+    batch.reviewResult = reviewResult
+    batch.updatedAt = Date.now()
+  })
+}
+
+export function drillDownBatchByStatus(batchId: string, status: AuditStatus | 'unchecked'): AppState {
+  return setState(s => {
+    s.ui.currentView = 'batchDetail'
+    s.ui.selectedBatchId = batchId
+    if (status === 'unchecked') {
+      s.filters.statuses = ['__unchecked__' as AuditStatus]
+    } else {
+      s.filters.statuses = [status]
+    }
+    s.filters.areaIds = []
+    s.filters.themeIds = []
+    s.filters.responsible = []
+    s.filters.alertTypes = []
+    s.filters.searchText = ''
+    s.ui.batchReviewPanelOpen = false
+    const batchItems = getFilteredBatchChecklistInternal(s, batchId)
+    s.ui.highlightedItemId = batchItems.length > 0 ? batchItems[0].id : null
+  })
+}
+
+export function drillDownBatchByAlertType(batchId: string, alertType: AlertType): AppState {
+  return setState(s => {
+    s.ui.currentView = 'batchDetail'
+    s.ui.selectedBatchId = batchId
+    s.filters.alertTypes = [alertType]
+    s.filters.areaIds = []
+    s.filters.themeIds = []
+    s.filters.responsible = []
+    s.filters.statuses = []
+    s.filters.searchText = ''
+    s.ui.batchReviewPanelOpen = false
+    const batchItems = getFilteredBatchChecklistInternal(s, batchId)
+    s.ui.highlightedItemId = batchItems.length > 0 ? batchItems[0].id : null
+  })
+}
+
+export function drillDownBatchByResponsible(batchId: string, responsible: string): AppState {
+  return setState(s => {
+    s.ui.currentView = 'batchDetail'
+    s.ui.selectedBatchId = batchId
+    if (responsible === '未指定') {
+      s.filters.responsible = ['__none__']
+    } else {
+      s.filters.responsible = [responsible]
+    }
+    s.filters.areaIds = []
+    s.filters.themeIds = []
+    s.filters.statuses = []
+    s.filters.alertTypes = []
+    s.filters.searchText = ''
+    s.ui.batchReviewPanelOpen = false
+    const batchItems = getFilteredBatchChecklistInternal(s, batchId)
+    s.ui.highlightedItemId = batchItems.length > 0 ? batchItems[0].id : null
+  })
+}
+
+export function drillDownBatchByRectificationStatus(batchId: string, status: RectificationStatus | 'overdue' | 'unclosed'): AppState {
+  return setState(s => {
+    s.ui.currentView = 'batchDetail'
+    s.ui.selectedBatchId = batchId
+    s.ui.rectificationPanelOpen = true
+    if (status === 'overdue') {
+      s.ui.rectificationFilterStatus = 'overdue'
+    } else if (status === 'unclosed') {
+      s.ui.rectificationFilterStatus = 'all'
+    } else {
+      s.ui.rectificationFilterStatus = status
+    }
+    s.ui.batchReviewPanelOpen = false
+  })
+}
+
+function getFilteredBatchChecklistInternal(s: AppState, batchId: string): ChecklistItem[] {
+  const batch = s.batches.find(b => b.id === batchId)
+  if (!batch) return []
+  const idSet = new Set(batch.checklistItemIds)
+  const batchItems = s.checklist.filter(i => idSet.has(i.id))
+  const { filters } = s
+  return batchItems.filter(item => {
+    if (filters.areaIds.length > 0 && !filters.areaIds.includes(item.areaId)) return false
+    if (filters.themeIds.length > 0 && !filters.themeIds.includes(item.themeId)) return false
+    if (filters.responsible.length > 0) {
+      const wantNone = filters.responsible.includes('__none__')
+      if (wantNone) {
+        if (item.responsible && item.responsible.trim() !== '') return false
+      } else {
+        if (!item.responsible) return false
+        if (!filters.responsible.includes(item.responsible)) return false
+      }
+    }
+    if (filters.statuses.length > 0) {
+      const wantUnchecked = filters.statuses.includes('__unchecked__' as AuditStatus)
+      if (wantUnchecked) {
+        if (item.status !== null) return false
+      } else {
+        const wantActual = filters.statuses.filter(st => st !== '__unchecked__' as AuditStatus)
+        if (wantActual.length > 0) {
+          if (!item.status) return false
+          if (!wantActual.includes(item.status)) return false
+        }
+      }
+    }
+    if (filters.alertTypes.length > 0) {
+      const itemAlertTypes = new Set(s.alerts.filter(a => a.itemId === item.id).map(a => a.type))
+      const hasMatch = filters.alertTypes.some(t => itemAlertTypes.has(t))
+      if (!hasMatch) return false
+    }
+    if (filters.searchText) {
+      const q = filters.searchText.toLowerCase()
+      if (!item.title.toLowerCase().includes(q) &&
+          !(item.displayLocation || '').toLowerCase().includes(q) &&
+          !item.rectificationRemark.toLowerCase().includes(q) &&
+          !item.missingExplanation.toLowerCase().includes(q)) return false
+    }
+    return true
   })
 }

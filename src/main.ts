@@ -13,7 +13,8 @@ import type {
   RectificationTask,
   RectificationStatus,
   InspectionBatch,
-  BatchStatus
+  BatchStatus,
+  ReviewTab
 } from './types'
 import {
   STATUS_LABELS,
@@ -25,7 +26,9 @@ import {
   RECTIFICATION_STATUS_LABELS,
   RECTIFICATION_STATUS_COLORS,
   BATCH_STATUS_LABELS,
-  BATCH_STATUS_COLORS
+  BATCH_STATUS_COLORS,
+  CONCLUSION_LABELS,
+  CONCLUSION_COLORS
 } from './types'
 import * as store from './store'
 
@@ -109,6 +112,7 @@ function render(): void {
       ${renderSummaryModal(s)}
       ${renderBatchCreateModal(s)}
       ${renderBatchSummaryModal(s)}
+      ${renderBatchReviewPanel(s)}
     </div>
   `
 
@@ -2480,9 +2484,13 @@ function renderBatchDetail(s: AppState, readOnly: boolean, configReadOnly: boole
           </div>
         </div>
         <div class="batch-detail-actions">
-          <button class="btn" id="batchSummaryBtn">📝 生成复盘摘要</button>
+          <button class="btn ${s.ui.batchReviewPanelOpen ? 'active' : ''}" id="openBatchReviewBtn" 
+            style="${s.ui.batchReviewPanelOpen ? `background:${BATCH_STATUS_COLORS.active};border-color:${BATCH_STATUS_COLORS.active};color:white` : ''}">
+            📊 复盘分析
+          </button>
+          <button class="btn" id="batchSummaryBtn">📝 复盘摘要</button>
           ${!configReadOnly && batch.status === 'active' ? `
-            <button class="btn btn-danger" id="closeThisBatchBtn">关闭批次</button>
+            <button class="btn btn-danger" id="closeThisBatchBtn">关闭归档</button>
           ` : ''}
         </div>
       </div>
@@ -2490,9 +2498,66 @@ function renderBatchDetail(s: AppState, readOnly: boolean, configReadOnly: boole
       ${batch.status === 'closed' ? `
         <div class="batch-closed-notice" style="background:#fef3c7;padding:12px 16px;border-radius:8px;margin-bottom:16px;display:flex;align-items:center;gap:8px;color:#92400e">
           <span style="font-size:20px">🔒</span>
-          <span>此批次已于 <strong>${batch.closedAt ? formatTime(batch.closedAt) : ''}</strong> 由 <strong>${esc(batch.closedBy || '')}</strong> 关闭，已锁定无法编辑。</span>
+          <span>此批次已于 <strong>${batch.closedAt ? formatTime(batch.closedAt) : ''}</strong> 由 <strong>${esc(batch.closedBy || '')}</strong> 关闭归档，已锁定无法编辑。</span>
         </div>
       ` : ''}
+
+      ${batch.reviewResult ? `
+        <div class="batch-review-summary-card" style="margin-bottom:16px">
+          <div class="review-summary-header">
+            <div class="review-summary-title">
+              <span style="font-size:18px">📋</span>
+              <span>批次结论</span>
+              <span class="review-conclusion-tag" style="background:${CONCLUSION_COLORS[batch.reviewResult.conclusion]};color:white">
+                ${CONCLUSION_LABELS[batch.reviewResult.conclusion]}
+              </span>
+            </div>
+            <div class="review-summary-meta text-muted" style="font-size:12px">
+              生成于 ${formatTime(batch.reviewResult.generatedAt)} · ${esc(batch.reviewResult.generatedBy)}
+            </div>
+          </div>
+          <div class="review-summary-body">
+            <div class="review-conclusion-text">${esc(batch.reviewResult.conclusionText)}</div>
+            ${batch.reviewResult.keyRisks.length > 0 ? `
+              <div class="review-risks">
+                <div class="review-risks-title">⚠️ 关键风险提示</div>
+                <ul class="review-risks-list">
+                  ${batch.reviewResult.keyRisks.map(r => `<li>${esc(r)}</li>`).join('')}
+                </ul>
+              </div>
+            ` : ''}
+          </div>
+          ${s.currentRole === 'auditor' ? `
+            <div class="auditor-quick-links">
+              <span class="text-muted" style="font-size:12px;margin-right:8px">快速查看：</span>
+              <button class="btn btn-sm" data-auditor-view="issues" style="padding:4px 10px;font-size:12px">异常明细 (${stats.issueCount})</button>
+              <button class="btn btn-sm" data-auditor-view="alerts" style="padding:4px 10px;font-size:12px">告警列表 (${stats.totalAlerts})</button>
+              <button class="btn btn-sm" data-auditor-view="rectifications" style="padding:4px 10px;font-size:12px">整改闭环 (${stats.unclosedRectifications})</button>
+            </div>
+          ` : ''}
+        </div>
+      ` : (s.currentRole === 'auditor' ? `
+        <div class="batch-review-summary-card" style="margin-bottom:16px;border-style:dashed">
+          <div class="review-summary-header">
+            <div class="review-summary-title">
+              <span style="font-size:18px">📋</span>
+              <span>批次结论</span>
+              <span class="review-conclusion-tag" style="background:var(--text-muted);color:white">
+                待生成
+              </span>
+            </div>
+          </div>
+          <div class="review-summary-body">
+            <div class="review-conclusion-text text-muted">运营人员尚未生成本批次的复盘结论，以下为实时统计数据供审计参考。</div>
+          </div>
+          <div class="auditor-quick-links">
+            <span class="text-muted" style="font-size:12px;margin-right:8px">快速查看：</span>
+            <button class="btn btn-sm" data-auditor-view="issues" style="padding:4px 10px;font-size:12px">异常明细 (${stats.issueCount})</button>
+            <button class="btn btn-sm" data-auditor-view="alerts" style="padding:4px 10px;font-size:12px">告警列表 (${stats.totalAlerts})</button>
+            <button class="btn btn-sm" data-auditor-view="rectifications" style="padding:4px 10px;font-size:12px">整改闭环 (${stats.unclosedRectifications})</button>
+          </div>
+        </div>
+      ` : '')}
 
       <div class="batch-detail-stats">
         <div class="dash-card" style="box-shadow:none;border:1px solid var(--border)">
@@ -2744,6 +2809,260 @@ function renderBatchSummaryModal(s: AppState): string {
   `
 }
 
+function renderBatchReviewPanel(s: AppState): string {
+  if (!s.ui.batchReviewPanelOpen || !s.ui.selectedBatchId) {
+    return `<div class="review-panel" id="batchReviewPanel"></div>`
+  }
+
+  const batch = store.getBatch(s.ui.selectedBatchId)
+  if (!batch) return `<div class="review-panel" id="batchReviewPanel"></div>`
+
+  const stats = store.getBatchStats(batch.id)
+  const tabs: { key: ReviewTab; label: string; icon: string }[] = [
+    { key: 'overview', label: '总览', icon: '📊' },
+    { key: 'alerts', label: '告警分布', icon: '🔔' },
+    { key: 'rectifications', label: '整改闭环', icon: '🔄' },
+    { key: 'responsibles', label: '责任人', icon: '👥' }
+  ]
+  const currentTab = s.ui.batchReviewTab
+
+  let tabContent = ''
+  if (currentTab === 'overview') {
+    tabContent = `
+      <div class="review-tab-content">
+        <div class="review-section">
+          <div class="review-section-title">📈 校对完成概况</div>
+          <div class="review-overview-grid">
+            <div class="review-stat-card" data-drill-status="all">
+              <div class="review-stat-num" style="color:var(--primary)">${stats.totalItems}</div>
+              <div class="review-stat-label">清单总数</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-status="checked">
+              <div class="review-stat-num" style="color:var(--success)">${stats.checkedCount} <span style="font-size:14px">(${stats.checkProgress}%)</span></div>
+              <div class="review-stat-label">已校对</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-status="unchecked">
+              <div class="review-stat-num" style="color:var(--text-muted)">${stats.uncheckedCount}</div>
+              <div class="review-stat-label">未校对</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-status="normal">
+              <div class="review-stat-num" style="color:${STATUS_COLORS.normal}">${stats.normalCount}</div>
+              <div class="review-stat-label">正常项</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-status="need_supply">
+              <div class="review-stat-num" style="color:${STATUS_COLORS.need_supply}">${stats.needSupplyCount}</div>
+              <div class="review-stat-label">需补充</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-status="need_review">
+              <div class="review-stat-num" style="color:${STATUS_COLORS.need_review}">${stats.needReviewCount}</div>
+              <div class="review-stat-label">需复核</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-status="pending">
+              <div class="review-stat-num" style="color:${STATUS_COLORS.pending}">${stats.pendingCount}</div>
+              <div class="review-stat-label">暂缓处理</div>
+            </div>
+          </div>
+          <div class="review-progress-wrap">
+            <div class="review-progress-label">
+              <span>校对完成率</span>
+              <span style="font-weight:600">${stats.checkProgress}%</span>
+            </div>
+            <div class="progress-bar" style="height:10px">
+              <div class="progress-fill" style="width:${stats.checkProgress}%"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="review-section">
+          <div class="review-section-title">🔔 告警类型概览</div>
+          <div class="review-alert-overview">
+            ${(Object.entries(stats.alertTypeDistribution) as [AlertType, number][])
+              .filter(([, count]) => count > 0)
+              .sort((a, b) => b[1] - a[1])
+              .map(([type, count]) => `
+                <div class="review-alert-chip clickable" data-drill-alert="${type}"
+                  style="border-left:3px solid ${ALERT_COLORS[type]}">
+                  <span class="review-alert-name">${ALERT_LABELS[type]}</span>
+                  <span class="review-alert-count" style="background:${ALERT_COLORS[type]};color:white">${count}</span>
+                </div>
+              `).join('') || `<div class="text-muted" style="padding:12px">暂无告警</div>`}
+          </div>
+        </div>
+
+        <div class="review-section">
+          <div class="review-section-title">🔄 整改闭环概览</div>
+          <div class="review-overview-grid">
+            <div class="review-stat-card clickable" data-drill-rect="all">
+              <div class="review-stat-num" style="color:#8b5cf6">${stats.totalRectifications}</div>
+              <div class="review-stat-label">整改总数</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-rect="pending">
+              <div class="review-stat-num" style="color:${RECTIFICATION_STATUS_COLORS.pending}">${stats.pendingRectifications}</div>
+              <div class="review-stat-label">待处理</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-rect="in_progress">
+              <div class="review-stat-num" style="color:${RECTIFICATION_STATUS_COLORS.in_progress}">${stats.inProgressRectifications}</div>
+              <div class="review-stat-label">处理中</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-rect="completed">
+              <div class="review-stat-num" style="color:${RECTIFICATION_STATUS_COLORS.completed}">${stats.completedRectifications}</div>
+              <div class="review-stat-label">已完成</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-rect="closed">
+              <div class="review-stat-num" style="color:${RECTIFICATION_STATUS_COLORS.closed}">${stats.closedRectifications}</div>
+              <div class="review-stat-label">已关闭</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-rect="unclosed">
+              <div class="review-stat-num" style="color:#f97316">${stats.unclosedRectifications}</div>
+              <div class="review-stat-label">未闭环</div>
+            </div>
+            <div class="review-stat-card clickable" data-drill-rect="overdue">
+              <div class="review-stat-num" style="color:var(--danger)">${stats.overdueRectifications}</div>
+              <div class="review-stat-label">已逾期</div>
+            </div>
+          </div>
+          <div class="review-progress-wrap">
+            <div class="review-progress-label">
+              <span>整改完成率</span>
+              <span style="font-weight:600">${stats.rectificationProgress}%</span>
+            </div>
+            <div class="progress-bar" style="height:10px;background:#ede9fe">
+              <div class="progress-fill" style="width:${stats.rectificationProgress}%;background:#8b5cf6"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `
+  } else if (currentTab === 'alerts') {
+    const alertEntries = (Object.entries(stats.alertTypeDistribution) as [AlertType, number][])
+      .filter(([, count]) => count > 0)
+      .sort((a, b) => b[1] - a[1])
+    const maxAlertCount = Math.max(...alertEntries.map(([, c]) => c), 1)
+
+    tabContent = `
+      <div class="review-tab-content">
+        <div class="review-section">
+          <div class="review-section-title">🔔 告警类型分布（共 ${stats.totalAlerts} 条）</div>
+          ${alertEntries.length === 0 ? `<div class="text-muted" style="padding:20px;text-align:center">暂无告警记录</div>` : `
+            <div class="review-distribution-list">
+              ${alertEntries.map(([type, count]) => `
+                <div class="review-dist-row clickable" data-drill-alert="${type}">
+                  <div class="review-dist-label">
+                    <span class="review-dist-color" style="background:${ALERT_COLORS[type]}"></span>
+                    <span>${ALERT_LABELS[type]}</span>
+                  </div>
+                  <div class="review-dist-bar-wrap">
+                    <div class="review-dist-bar" style="width:${(count / maxAlertCount) * 100}%;background:${ALERT_COLORS[type]}"></div>
+                  </div>
+                  <div class="review-dist-count">${count}</div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </div>
+      </div>
+    `
+  } else if (currentTab === 'rectifications') {
+    const rectEntries: { status: RectificationStatus | 'unclosed' | 'overdue'; label: string; count: number; color: string }[] = [
+      { status: 'pending', label: '待处理', count: stats.pendingRectifications, color: RECTIFICATION_STATUS_COLORS.pending },
+      { status: 'in_progress', label: '处理中', count: stats.inProgressRectifications, color: RECTIFICATION_STATUS_COLORS.in_progress },
+      { status: 'completed', label: '已完成', count: stats.completedRectifications, color: RECTIFICATION_STATUS_COLORS.completed },
+      { status: 'closed', label: '已关闭', count: stats.closedRectifications, color: RECTIFICATION_STATUS_COLORS.closed },
+      { status: 'unclosed', label: '未闭环', count: stats.unclosedRectifications, color: '#f97316' },
+      { status: 'overdue', label: '已逾期', count: stats.overdueRectifications, color: 'var(--danger)' }
+    ]
+    const maxRectCount = Math.max(...rectEntries.map(r => r.count), 1)
+
+    tabContent = `
+      <div class="review-tab-content">
+        <div class="review-section">
+          <div class="review-section-title">🔄 整改闭环状态（共 ${stats.totalRectifications} 项）</div>
+          <div class="review-distribution-list">
+            ${rectEntries.map(r => `
+              <div class="review-dist-row clickable" data-drill-rect="${r.status}">
+                <div class="review-dist-label">
+                  <span class="review-dist-color" style="background:${r.color}"></span>
+                  <span>${r.label}</span>
+                </div>
+                <div class="review-dist-bar-wrap">
+                  <div class="review-dist-bar" style="width:${(r.count / maxRectCount) * 100}%;background:${r.color}"></div>
+                </div>
+                <div class="review-dist-count">${r.count}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        <div class="review-section">
+          <div class="review-section-title">📌 说明</div>
+          <div class="text-muted" style="font-size:13px;line-height:1.8">
+            <div>• <strong>未闭环</strong>：除"已关闭"之外的所有整改任务</div>
+            <div>• <strong>已逾期</strong>：计划完成时间已过且状态不是"已完成/已关闭"</div>
+            <div>• 点击任意状态可跳转至对应整改任务列表</div>
+          </div>
+        </div>
+      </div>
+    `
+  } else if (currentTab === 'responsibles') {
+    const maxRespCount = Math.max(...stats.responsibleDistribution.map(r => r.count), 1)
+
+    tabContent = `
+      <div class="review-tab-content">
+        <div class="review-section">
+          <div class="review-section-title">👥 责任人分布（共 ${stats.responsibleDistribution.length} 人）</div>
+          ${stats.responsibleDistribution.length === 0 ? `<div class="text-muted" style="padding:20px;text-align:center">暂无责任人数据</div>` : `
+            <div class="review-distribution-list">
+              ${stats.responsibleDistribution.map(r => `
+                <div class="review-dist-row clickable" data-drill-resp="${esc(r.name)}">
+                  <div class="review-dist-label">
+                    <span class="review-dist-color" style="background:${r.issueCount > 0 ? 'var(--danger)' : 'var(--success)'}"></span>
+                    <span>${esc(r.name)}</span>
+                    ${r.issueCount > 0 ? `<span class="review-resp-issue-badge">${r.issueCount} 项异常</span>` : ''}
+                  </div>
+                  <div class="review-dist-bar-wrap">
+                    <div class="review-dist-bar" style="width:${(r.count / maxRespCount) * 100}%;background:${r.issueCount > 0 ? '#fca5a5' : '#86efac'}"></div>
+                  </div>
+                  <div class="review-dist-count">${r.count} / ${r.issueCount}</div>
+                </div>
+              `).join('')}
+            </div>
+            <div class="text-muted" style="font-size:12px;margin-top:8px">📌 右侧数字格式：负责总数 / 异常项数，点击可查看该责任人的清单</div>
+          `}
+        </div>
+      </div>
+    `
+  }
+
+  return `
+    <div class="review-panel open" id="batchReviewPanel">
+      <div class="review-panel-header">
+        <div class="review-panel-title">
+          <span style="font-size:18px">📊</span>
+          <span>批次复盘分析 - ${esc(batch.name)}</span>
+        </div>
+        <div class="review-panel-actions">
+          ${s.currentRole !== 'auditor' ? `
+            <button class="btn btn-sm btn-primary" id="generateBatchReviewBtn">
+              ✨ 一键生成复盘结论
+            </button>
+          ` : ''}
+          <button class="btn btn-sm" id="closeReviewPanelBtn">关闭</button>
+        </div>
+      </div>
+      <div class="review-tabs">
+        ${tabs.map(t => `
+          <div class="review-tab ${currentTab === t.key ? 'active' : ''}" data-review-tab="${t.key}">
+            <span>${t.icon}</span>
+            <span>${t.label}</span>
+          </div>
+        `).join('')}
+      </div>
+      <div class="review-panel-body">
+        ${tabContent}
+      </div>
+    </div>
+  `
+}
+
 function bindBatchEvents(): void {
   // 批次列表筛选
   document.querySelectorAll('[data-batch-filter]').forEach(el => {
@@ -2825,13 +3144,6 @@ function bindBatchEvents(): void {
     })
   })
 
-  document.getElementById('closeThisBatchBtn')?.addEventListener('click', () => {
-    if (confirm('确定要关闭此巡检批次吗？关闭后将无法继续编辑。')) {
-      const batchId = store.getState().ui.selectedBatchId
-      if (batchId) store.closeBatch(batchId)
-    }
-  })
-
   // 批次复盘摘要
   document.getElementById('batchSummaryBtn')?.addEventListener('click', () => {
     store.setBatchSummaryModalOpen(true)
@@ -2874,6 +3186,118 @@ function bindBatchEvents(): void {
         btn.textContent = '✅ 已复制'
         setTimeout(() => { btn.textContent = originalText }, 2000)
       }
+    }
+  })
+
+  // 复盘面板开关
+  document.getElementById('openBatchReviewBtn')?.addEventListener('click', () => {
+    const s = store.getState()
+    store.setBatchReviewPanelOpen(!s.ui.batchReviewPanelOpen)
+  })
+
+  document.getElementById('closeReviewPanelBtn')?.addEventListener('click', () => {
+    store.setBatchReviewPanelOpen(false)
+  })
+
+  // 复盘面板Tab切换
+  document.querySelectorAll('[data-review-tab]').forEach(el => {
+    el.addEventListener('click', () => {
+      const tab = (el as HTMLElement).dataset.reviewTab as ReviewTab
+      store.setBatchReviewTab(tab)
+    })
+  })
+
+  // 一键生成复盘结论
+  document.getElementById('generateBatchReviewBtn')?.addEventListener('click', () => {
+    const batchId = store.getState().ui.selectedBatchId
+    if (!batchId) return
+    store.generateBatchReviewResult(batchId)
+    store.setBatchReviewPanelOpen(false)
+  })
+
+  // 穿透定位 - 校对状态
+  document.querySelectorAll('[data-drill-status]').forEach(el => {
+    el.addEventListener('click', () => {
+      const batchId = store.getState().ui.selectedBatchId
+      if (!batchId) return
+      const status = (el as HTMLElement).dataset.drillStatus as string
+      if (status === 'all') {
+        store.resetFilters()
+        store.setBatchReviewPanelOpen(false)
+      } else if (status === 'checked') {
+        store.drillDownBatchByStatus(batchId, 'normal')
+      } else if (status === 'unchecked') {
+        store.drillDownBatchByStatus(batchId, 'unchecked')
+      } else {
+        store.drillDownBatchByStatus(batchId, status as AuditStatus)
+      }
+    })
+  })
+
+  // 穿透定位 - 告警类型
+  document.querySelectorAll('[data-drill-alert]').forEach(el => {
+    el.addEventListener('click', () => {
+      const batchId = store.getState().ui.selectedBatchId
+      if (!batchId) return
+      const alertType = (el as HTMLElement).dataset.drillAlert as AlertType
+      store.drillDownBatchByAlertType(batchId, alertType)
+    })
+  })
+
+  // 穿透定位 - 整改状态
+  document.querySelectorAll('[data-drill-rect]').forEach(el => {
+    el.addEventListener('click', () => {
+      const batchId = store.getState().ui.selectedBatchId
+      if (!batchId) return
+      const status = (el as HTMLElement).dataset.drillRect as RectificationStatus | 'overdue' | 'unclosed' | 'all'
+      if (status === 'all') {
+        store.drillDownBatchByRectificationStatus(batchId, 'unclosed')
+      } else {
+        store.drillDownBatchByRectificationStatus(batchId, status as RectificationStatus | 'overdue' | 'unclosed')
+      }
+    })
+  })
+
+  // 穿透定位 - 责任人
+  document.querySelectorAll('[data-drill-resp]').forEach(el => {
+    el.addEventListener('click', () => {
+      const batchId = store.getState().ui.selectedBatchId
+      if (!batchId) return
+      const resp = (el as HTMLElement).dataset.drillResp as string
+      store.drillDownBatchByResponsible(batchId, resp)
+    })
+  })
+
+  // 审计员快速入口
+  document.querySelectorAll('[data-auditor-view]').forEach(el => {
+    el.addEventListener('click', () => {
+      const batchId = store.getState().ui.selectedBatchId
+      if (!batchId) return
+      const view = (el as HTMLElement).dataset.auditorView as string
+      if (view === 'issues') {
+        store.drillDownBatchByStatus(batchId, 'need_review')
+      } else if (view === 'alerts') {
+        store.setAlertPanelOpen(true)
+      } else if (view === 'rectifications') {
+        store.setRectificationPanelOpen(true)
+      }
+    })
+  })
+
+  // 关闭归档确认（增强）
+  document.getElementById('closeThisBatchBtn')?.addEventListener('click', () => {
+    const batchId = store.getState().ui.selectedBatchId
+    if (!batchId) return
+    const stats = store.getBatchStats(batchId)
+    let msg = '确定要关闭归档此巡检批次吗？\n关闭后批次内容将只读但仍可查看复盘摘要。'
+    if (stats.unclosedRectifications > 0) {
+      msg += `\n\n⚠️ 注意：当前还有 ${stats.unclosedRectifications} 项整改任务尚未闭环。`
+    }
+    if (stats.uncheckedCount > 0) {
+      msg += `\n⚠️ 注意：当前还有 ${stats.uncheckedCount} 项清单未完成校对。`
+    }
+    if (confirm(msg)) {
+      store.closeBatch(batchId)
     }
   })
 }

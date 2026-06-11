@@ -6,6 +6,14 @@ export type RectificationStatus = 'pending' | 'in_progress' | 'completed' | 'clo
 
 export type BatchStatus = 'active' | 'closed'
 
+export interface BatchReviewResult {
+  generatedAt: number
+  generatedBy: string
+  conclusion: 'excellent' | 'good' | 'fair' | 'poor'
+  conclusionText: string
+  keyRisks: string[]
+}
+
 export interface InspectionBatch {
   id: string
   name: string
@@ -20,6 +28,7 @@ export interface InspectionBatch {
   closedAt?: number
   closedBy?: string
   summary?: string
+  reviewResult?: BatchReviewResult
   checklistItemIds: string[]
 }
 
@@ -137,12 +146,22 @@ export interface BatchStats {
   checkedCount: number
   uncheckedCount: number
   normalCount: number
+  needSupplyCount: number
+  needReviewCount: number
+  pendingCount: number
   issueCount: number
   checkProgress: number
   totalAlerts: number
+  alertTypeDistribution: Record<AlertType, number>
+  totalRectifications: number
   activeRectifications: number
   completedRectifications: number
+  pendingRectifications: number
+  inProgressRectifications: number
+  closedRectifications: number
   rectificationProgress: number
+  unclosedRectifications: number
+  overdueRectifications: number
   responsibleDistribution: Array<{ name: string; count: number; issueCount: number }>
 }
 
@@ -162,6 +181,8 @@ export interface DashboardStats {
   overdueRectificationCount: number
   totalRectifications: number
 }
+
+export type ReviewTab = 'overview' | 'alerts' | 'rectifications' | 'responsibles'
 
 export interface UiState {
   sidebarOpen: boolean
@@ -184,6 +205,8 @@ export interface UiState {
   batchCreateModalOpen: boolean
   batchSummaryModalOpen: boolean
   batchFilterStatus: BatchStatus | 'all'
+  batchReviewPanelOpen: boolean
+  batchReviewTab: ReviewTab
 }
 
 export interface AppState {
@@ -283,4 +306,18 @@ export const BATCH_STATUS_LABELS: Record<BatchStatus, string> = {
 export const BATCH_STATUS_COLORS: Record<BatchStatus, string> = {
   active: '#3b82f6',
   closed: '#6b7280'
+}
+
+export const CONCLUSION_LABELS: Record<'excellent' | 'good' | 'fair' | 'poor', string> = {
+  excellent: '优秀',
+  good: '良好',
+  fair: '一般',
+  poor: '待改进'
+}
+
+export const CONCLUSION_COLORS: Record<'excellent' | 'good' | 'fair' | 'poor', string> = {
+  excellent: '#10b981',
+  good: '#3b82f6',
+  fair: '#f59e0b',
+  poor: '#ef4444'
 }
